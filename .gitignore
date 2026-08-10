@@ -1,0 +1,32 @@
+# Vivado 可再生工程与生成目录
+*.xpr
+*.cache/
+*.runs/
+*.hw/
+*.ip_user_files/
+*.sim/
+*.srcs/
+*.gen/
+.Xil/
+xsim.dir/
+
+# 日志、报告和构建产物
+*.jou
+*.log
+*.pb
+*.str
+*.bit
+*.bin
+*.dcp
+*.rpt
+*.wdb
+*.vcd
+*.vvp
+build/
+reports/
+
+# 编辑器和系统文件
+*~
+*.swp
+*.swo
+.DS_Store
