@@ -1,84 +1,48 @@
 `default_nettype none
 
 module top #(
-    parameter integer CLOCK_HZ = 50_000_000,
-    parameter integer BAUD_RATE = 115_200
+    parameter integer CLOCK_HZ     = 50_000_000,
+    parameter         MEMFILE      = "program.hex",
+    parameter integer CPU_PRESCALE = 500
 ) (
-    input  wire clk,
-    input  wire rst_n,
-    output wire led,
-    output wire ttl_tx
+    input  wire       clk,
+    input  wire       rst_n,
+    output wire [7:0] led
 );
-  localparam integer CLKS_PER_BIT = CLOCK_HZ / BAUD_RATE;
-  localparam integer MESSAGE_LEN = 13;
+  // 预分频产生单周期时钟使能 cpu_en, 让 microseq 在慢速时间基上运行.
+  // delay=F000 计数 * 500 分频 / 50MHz 约 0.61s 每步, 人眼可观测.
+  // 这是时钟使能而非门控时钟, 全模块共享同一个 50MHz 时钟.
+  localparam integer PRESCALE_W   = (CPU_PRESCALE <= 1) ? 1 : $clog2(CPU_PRESCALE);
+  localparam integer PRESCALE_MAX = CPU_PRESCALE - 1;
 
-  wire blink_level;
-  reg        tx_start;
-  reg  [7:0] tx_data;
-  wire       tx_busy;
-  reg  [3:0] message_index;
+  reg  [PRESCALE_W-1:0] prescale_cnt;
+  wire                  cpu_en = (prescale_cnt == PRESCALE_MAX[PRESCALE_W-1:0]);
 
-  function [7:0] message_byte;
-    input [3:0] index;
-    begin
-      case (index)
-        4'd0:  message_byte = "H";
-        4'd1:  message_byte = "e";
-        4'd2:  message_byte = "l";
-        4'd3:  message_byte = "l";
-        4'd4:  message_byte = "o";
-        4'd5:  message_byte = " ";
-        4'd6:  message_byte = "F";
-        4'd7:  message_byte = "P";
-        4'd8:  message_byte = "G";
-        4'd9:  message_byte = "A";
-        4'd10: message_byte = "!";
-        4'd11: message_byte = 8'h0d;
-        default: message_byte = 8'h0a;
-      endcase
-    end
-  endfunction
+  wire [7:0] cpu_led;
 
-  blink #(
-      .CLOCK_HZ(CLOCK_HZ)
-  ) blink_inst (
-      .clk(clk),
-      .resetn(rst_n),
-      .led(blink_level)
-  );
-
-  // 板载 LED 低电平点亮.
-  assign led = ~blink_level;
-
-  uart_tx #(
-      .CLKS_PER_BIT(CLKS_PER_BIT)
-  ) uart_tx_inst (
-      .clk(clk),
-      .resetn(rst_n),
-      .start(tx_start),
-      .data(tx_data),
-      .tx(ttl_tx),
-      .busy(tx_busy)
-  );
-
-  // UART 空闲后立即提交下一个字节,循环背靠背发送固定测试行.
   always @(posedge clk) begin
-    if (!rst_n) begin
-      tx_start     <= 1'b0;
-      tx_data      <= message_byte(0);
-      message_index <= 0;
-    end else begin
-      tx_start <= 1'b0;
-      if (!tx_busy && !tx_start) begin
-        tx_data  <= message_byte(message_index);
-        tx_start <= 1'b1;
-        if (message_index == MESSAGE_LEN - 1)
-          message_index <= 0;
-        else
-          message_index <= message_index + 1'b1;
-      end
-    end
+    if (!rst_n)
+      prescale_cnt <= {PRESCALE_W{1'b0}};
+    else if (cpu_en)
+      prescale_cnt <= {PRESCALE_W{1'b0}};
+    else
+      prescale_cnt <= prescale_cnt + 1'b1;
   end
+
+  microseq #(
+      .MEMFILE(MEMFILE)
+  ) cpu_inst (
+      .clk    (clk),
+      .resetn (rst_n),
+      .cpu_en (cpu_en),
+      .led    (cpu_led),
+      .pc     (),
+      .retired()
+  );
+
+  // 板载 LED 低电平点亮, 因此把 CPU 输出取反后再送到引脚.
+  // 指令 led=01 点亮 LED0, 与流水灯直觉一致.
+  assign led = ~cpu_led;
 endmodule
 
 `default_nettype wire

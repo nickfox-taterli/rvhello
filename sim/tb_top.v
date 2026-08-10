@@ -1,63 +1,57 @@
 `timescale 1ns / 1ps
 
+// 顶层仿真: 用小分频和短延时程序, 验证流水灯在引脚上的可见序列.
+// CPU led 走 01->02->04->08, 板载低电平点亮, 故引脚电平为 FE->FD->FB->F7 循环.
 module tb_top;
-  localparam integer CLOCK_HZ = 40;
-  localparam integer BAUD_RATE = 10;
-  localparam integer CLKS_PER_BIT = CLOCK_HZ / BAUD_RATE;
+  localparam integer CPU_PRESCALE = 2;
 
-  reg clk = 0;
-  reg rst_n = 0;
-  wire led;
-  wire ttl_tx;
-  integer i;
-  integer byte_index;
-  reg [7:0] received;
+  reg        clk   = 0;
+  reg        rst_n = 0;
+  wire [7:0] led;
 
   always #5 clk = ~clk;
 
-  top #(.CLOCK_HZ(CLOCK_HZ), .BAUD_RATE(BAUD_RATE)) dut (
-      .clk(clk), .rst_n(rst_n), .led(led), .ttl_tx(ttl_tx)
+  top #(
+      .MEMFILE     ("sim/program_sim.hex"),
+      .CPU_PRESCALE(CPU_PRESCALE)
+  ) dut (
+      .clk  (clk),
+      .rst_n(rst_n),
+      .led  (led)
   );
 
-  function [7:0] expected_byte;
-    input integer index;
-    begin
-      case (index)
-        0: expected_byte = "H"; 1: expected_byte = "e";
-        2: expected_byte = "l"; 3: expected_byte = "l";
-        4: expected_byte = "o"; 5: expected_byte = " ";
-        6: expected_byte = "F"; 7: expected_byte = "P";
-        8: expected_byte = "G"; 9: expected_byte = "A";
-        10: expected_byte = "!"; 11: expected_byte = 8'h0d;
-        default: expected_byte = 8'h0a;
-      endcase
-    end
-  endfunction
-
-  task receive_byte;
-    begin
-      @(negedge ttl_tx);
-      repeat (CLKS_PER_BIT + CLKS_PER_BIT/2) @(posedge clk);
-      for (i = 0; i < 8; i = i + 1) begin
-        received[i] = ttl_tx;
-        repeat (CLKS_PER_BIT) @(posedge clk);
-      end
-      if (ttl_tx !== 1'b1) $fatal(1, "missing UART stop bit");
-    end
-  endtask
+  // 期望的引脚电平序列 (取反后的值), 取模 4 覆盖循环.
+  reg [7:0] exp_led [0:3];
+  integer   step;
 
   initial begin
+    exp_led[0] = 8'hFE;  // ~01
+    exp_led[1] = 8'hFD;  // ~02
+    exp_led[2] = 8'hFB;  // ~04
+    exp_led[3] = 8'hF7;  // ~08
+
     $dumpfile("build/top.vcd");
     $dumpvars(0, dut);
+
     repeat (2) @(posedge clk);
     rst_n <= 1;
-    for (byte_index = 0; byte_index < 13; byte_index = byte_index + 1) begin
-      receive_byte();
-      if (received !== expected_byte(byte_index))
-        $fatal(1, "byte %0d: expected %02x, got %02x",
-               byte_index, expected_byte(byte_index), received);
+
+    // 等待第一次 EXECUTE 后的引脚翻转 (复位后为 FF), 然后连续校验 8 步 (两圈).
+    @(led);
+    for (step = 0; step < 8; step = step + 1) begin
+      #1;
+      if (led !== exp_led[step % 4])
+        $fatal(1, "step %0d: expected led=%02x got %02x",
+               step, exp_led[step % 4], led);
+      @(led);
     end
-    $display("TOP PASS: received Hello FPGA! CR LF");
+
+    $display("TOP PASS: walking LED FE->FD->FB->F7 loop verified");
     $finish;
+  end
+
+  initial begin
+    #2000000;
+    $fatal(1, "tb_top watchdog timeout");
   end
 endmodule

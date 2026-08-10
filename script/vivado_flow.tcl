@@ -16,15 +16,23 @@ proc ensure_project {} {
         }
     }
     set_property target_language Verilog [current_project]
-    foreach path {src/blink.v src/uart_tx.v src/top.v} {
+    foreach path {src/blink.v src/uart_tx.v src/sync_bram.v src/microseq.v src/top.v} {
         if {![file exists $path]} { error "Missing file: $path" }
         if {[llength [get_files -quiet $path]] == 0} { add_files -norecurse $path }
     }
+    # BRAM 初值文件, 综合时由 $readmemh 加载; 同时把 src/ 加入包含路径,
+    # 保证 $readmemh("program.hex") 在综合运行目录下也能定位到该文件.
+    if {[llength [get_files -quiet src/program.hex]] == 0} {
+        add_files -norecurse src/program.hex
+    }
+    set_property include_dirs [list [file normalize "src"]] [get_filesets sources_1]
     if {[llength [get_files -quiet constr/top.xdc]] == 0} {
         add_files -fileset constrs_1 -norecurse constr/top.xdc
     }
-    if {[llength [get_files -quiet sim/tb_top.v]] == 0} {
-        add_files -fileset sim_1 -norecurse sim/tb_top.v
+    foreach tb {sim/tb_top.v sim/tb_microseq.v} {
+        if {[llength [get_files -quiet $tb]] == 0} {
+            add_files -fileset sim_1 -norecurse $tb
+        }
     }
     set_property top top [get_filesets sources_1]
     set_property top tb_top [get_filesets sim_1]
