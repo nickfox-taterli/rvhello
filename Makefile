@@ -4,7 +4,7 @@ VIVADO ?= /home/taterli/tools/Xilinx/Vivado/2024.2/bin/vivado
 JOBS ?= 8
 PORT ?= /dev/ttyACM0
 
-RTL := src/blink.v src/uart_tx.v src/sync_bram.v src/microseq.v src/addi_cpu.v src/seg_display.v src/top.v
+RTL := src/blink.v src/uart_tx.v src/sync_bram.v src/microseq.v src/addi_cpu.v src/seg_display.v src/rv32i_core.v src/top.v
 
 .PHONY: all sim sim-unit sim-top create synth impl bitstream program uart-check clean
 
@@ -12,11 +12,12 @@ all: sim
 
 sim: sim-unit sim-top
 
-sim-unit: build/blink.vvp build/uart_tx.vvp build/microseq.vvp build/addi_cpu.vvp
+sim-unit: build/blink.vvp build/uart_tx.vvp build/microseq.vvp build/addi_cpu.vvp build/rv32i.vvp
 	$(VVP) build/blink.vvp
 	$(VVP) build/uart_tx.vvp
 	$(VVP) build/microseq.vvp
 	$(VVP) build/addi_cpu.vvp
+	$(VVP) build/rv32i.vvp
 
 sim-top: build/top.vvp
 	$(VVP) build/top.vvp
@@ -33,7 +34,10 @@ build/microseq.vvp: src/sync_bram.v src/microseq.v sim/tb_microseq.v sim/program
 build/addi_cpu.vvp: src/addi_cpu.v sim/tb_addi_cpu.v | build
 	$(IVERILOG) -g2012 -s tb_addi_cpu -o $@ src/addi_cpu.v sim/tb_addi_cpu.v
 
-build/top.vvp: $(RTL) sim/tb_top.v | build
+build/rv32i.vvp: src/rv32i_core.v src/sync_bram.v sim/tb_rv32i.v src/program.hex | build
+	$(IVERILOG) -g2012 -s tb_rv32i -o $@ src/rv32i_core.v src/sync_bram.v sim/tb_rv32i.v
+
+build/top.vvp: $(RTL) sim/tb_top.v src/program.hex | build
 	$(IVERILOG) -g2012 -s tb_top -o $@ $(RTL) sim/tb_top.v
 
 build:
