@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-// rv32i_core 第 3 阶段仿真: 移位. 跑完 9 条后命中 ECALL 触发 trap.
-// 停机时一次性核对全部结果寄存器与 PC. 重点对照算术移位(保留符号)与逻辑移位(补零).
+// rv32i_core 第 4 阶段仿真: 条件分支. 6 条分支各走预期路径后命中 ECALL.
+// 全对时 x3 = 0x3F (bit0..5 各代表一条分支正确), PC 停在 0x48.
 module tb_rv32i;
   reg        clk    = 0;
   reg        resetn = 0;
@@ -60,19 +60,15 @@ module tb_rv32i;
     wait (trap);
     #1;
 
-    if (pc !== 32'h0000_0024)
-      $fatal(1, "trap pc expected 0x24 got %08x", pc);
-    if (dut.regs[1] !== 32'h0000_0001) $fatal(1, "x1 %08x", dut.regs[1]);
-    if (dut.regs[2] !== 32'h0000_0010) $fatal(1, "x2 %08x (SLLI)", dut.regs[2]);
-    if (dut.regs[3] !== 32'hFFFF_FFF0) $fatal(1, "x3 %08x", dut.regs[3]);
-    if (dut.regs[4] !== 32'hFFFF_FFFC) $fatal(1, "x4 %08x (SRAI)", dut.regs[4]);
-    if (dut.regs[5] !== 32'h0000_000F) $fatal(1, "x5 %08x (SRLI)", dut.regs[5]);
-    if (dut.regs[6] !== 32'h0000_0002) $fatal(1, "x6 %08x", dut.regs[6]);
-    if (dut.regs[7] !== 32'h0000_0040) $fatal(1, "x7 %08x (SLL)", dut.regs[7]);
-    if (dut.regs[8] !== 32'hFFFF_FFFC) $fatal(1, "x8 %08x (SRA)", dut.regs[8]);
-    if (dut.regs[9] !== 32'h3FFF_FFFC) $fatal(1, "x9 %08x (SRL)", dut.regs[9]);
+    if (pc !== 32'h0000_0048)
+      $fatal(1, "trap pc expected 0x48 got %08x", pc);
+    if (dut.regs[1] !== 32'h0000_0005) $fatal(1, "x1 %08x", dut.regs[1]);
+    if (dut.regs[2] !== 32'hFFFF_FFFF) $fatal(1, "x2 %08x", dut.regs[2]);
+    // x3 = 0x3F 表示 6 条分支 (BEQ/BNE/BLT/BLTU/BGE/BGEU) 全部按预期跳/不跳.
+    if (dut.regs[3] !== 32'h0000_003F)
+      $fatal(1, "x3 %08x (expected 0x3F, some branch went wrong)", dut.regs[3]);
 
-    $display("RV32I STAGE3 PASS: shifts verified, trap@pc=0x24");
+    $display("RV32I STAGE4 PASS: branches verified (x3=0x3F), trap@pc=0x48");
     $finish;
   end
 

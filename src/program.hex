@@ -1,21 +1,41 @@
-// RV32I 第 3 阶段程序: 移位 (立即数 + 寄存器), 末尾 ECALL 触发 trap @ PC=0x24.
-// 0x00: addi x1, x0, 1      -> x1 = 0x00000001
-// 0x04: slli x2, x1, 4      -> x2 = 0x00000010   (1 << 4)
-// 0x08: addi x3, x0, -16    -> x3 = 0xFFFFFFF0
-// 0x0C: srai x4, x3, 2      -> x4 = 0xFFFFFFFC   (-16 >>> 2 = -4, 算术)
-// 0x10: srli x5, x3, 28     -> x5 = 0x0000000F   (0xFFFFFFF0 >> 28, 逻辑)
-// 0x14: addi x6, x0, 2      -> x6 = 0x00000002   (移位量)
-// 0x18: sll  x7, x2, x6     -> x7 = 0x00000040   (16 << 2)
-// 0x1C: sra  x8, x3, x6     -> x8 = 0xFFFFFFFC   (-16 >>> 2 = -4, 算术)
-// 0x20: srl  x9, x3, x6     -> x9 = 0x3FFFFFFC   (0xFFFFFFF0 >> 2, 逻辑)
-// 0x24: ECALL (第 3 阶段非法) -> trap @ PC = 0x24
-00100093
-00409113
-FF000193
-4021D213
-01C1D293
-00200313
-006113B3
-4061D433
-0061D4B3
+// RV32I 第 4 阶段程序: 条件分支, 末尾 ECALL 触发 trap @ PC=0x48.
+// 用 x1=5, x2=-1 作操作数, 同时检验有符号(BLT/BGE)与无符号(BLTU/BGEU)分支.
+// x3 累加每个分支"走对"路径的贡献, 6 条全对时 x3 = 1+2+4+8+16+32 = 0x3F.
+// 0x00: addi x1,x0,5      -> x1 = 5
+// 0x04: addi x2,x0,-1     -> x2 = 0xFFFFFFFF
+// 0x08: addi x3,x0,0      -> x3 = 0
+// 0x0C: beq  x1,x1,8      -> taken (5==5), 跳过 poison
+// 0x10: addi x3,x3,100    -> poison (被跳过)
+// 0x14: addi x3,x3,1      -> x3 = 1
+// 0x18: bne  x1,x1,8      -> not taken (5==5), 顺序执行
+// 0x1C: addi x3,x3,2      -> x3 = 3
+// 0x20: blt  x2,x1,8      -> taken (-1<5 有符号)
+// 0x24: addi x3,x3,100    -> poison
+// 0x28: addi x3,x3,4      -> x3 = 7
+// 0x2C: bltu x2,x1,8      -> not taken (0xFFFFFFFF<5 无符号 false)
+// 0x30: addi x3,x3,8      -> x3 = 15
+// 0x34: bge  x1,x2,8      -> taken (5>=-1 有符号)
+// 0x38: addi x3,x3,100    -> poison
+// 0x3C: addi x3,x3,16     -> x3 = 31
+// 0x40: bgeu x1,x2,8      -> not taken (5>=0xFFFFFFFF 无符号 false)
+// 0x44: addi x3,x3,32     -> x3 = 63
+// 0x48: ECALL (第 4 阶段非法) -> trap @ PC = 0x48
+00500093
+FFF00113
+00000193
+00108463
+06418193
+00118193
+00109463
+00218193
+00114463
+06418193
+00418193
+00116463
+00818193
+0020D463
+06418193
+01018193
+0020F463
+02018193
 00000073

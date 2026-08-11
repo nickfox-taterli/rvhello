@@ -1,6 +1,6 @@
 `default_nettype none
 
-// 第3阶段实现 => 第1/2阶段 + 移位 (SLLI/SRLI/SRAI 立即数, SLL/SRL/SRA 寄存器)
+// 第4阶段实现 => 之前已经完成的内容 + 条件分支 (BEQ/BNE/BLT/BGE/BLTU/BGEU)
 
 // | 格式 | 主要用途 | 典型指令 |
 // | R 型 | 寄存器-寄存器 ALU | ADD, SUB, AND, OR, SLT |
@@ -51,21 +51,24 @@ module rv32i_core #(
   wire [31:0] rs1_value = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
   wire [31:0] rs2_value = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
 
-  // 用到的立即数: I 型与 U 型; 移位的 shamt 直接取 ir[24:20], 不走立即数重排.
+  // 用到的立即数: I/U/B 型 (移位 shamt 取 ir[24:20], 不走立即数重排).
   wire [31:0] imm_i = {{20{ir[31]}}, ir[31:20]};
   wire [31:0] imm_u = {ir[31:12], 12'b0};
   wire [4:0]  shamt = ir[24:20];
+  wire [31:0] imm_b = {{19{ir[31]}}, ir[31], ir[7], ir[30:25], ir[11:8], 1'b0};
 
   // 组合译码只计算候选动作; 真正改 PC/寄存器/总线的操作集中在时序块.
   reg        decoded_legal;
   reg        decoded_write_rd;
   reg [31:0] decoded_result;
+  reg [31:0] decoded_next_pc;  // 默认 pc+4, 分支命中时改为 pc+imm_b
 
   always @* begin
     // 每条路径先给安全默认值, 避免组合 always 推断锁存器.
     decoded_legal    = 1'b1;
     decoded_write_rd = 1'b0;
     decoded_result   = 32'd0;
+    decoded_next_pc  = pc + 32'd4; // 如果没分支时候,这是默认.
 
     case (opcode)
       7'b0110111: begin  // LUI
@@ -121,6 +124,18 @@ module rv32i_core #(
         endcase
       end
 
+      7'b1100011: begin  // BRANCH
+        case (funct3)
+          3'b000: if (rs1_value == rs2_value) decoded_next_pc = pc + imm_b;                       // BEQ
+          3'b001: if (rs1_value != rs2_value) decoded_next_pc = pc + imm_b;                       // BNE
+          3'b100: if ($signed(rs1_value) <  $signed(rs2_value)) decoded_next_pc = pc + imm_b;     // BLT
+          3'b101: if ($signed(rs1_value) >= $signed(rs2_value)) decoded_next_pc = pc + imm_b;     // BGE
+          3'b110: if (rs1_value <  rs2_value) decoded_next_pc = pc + imm_b;                       // BLTU
+          3'b111: if (rs1_value >= rs2_value) decoded_next_pc = pc + imm_b;                       // BGEU
+          default: decoded_legal = 1'b0;
+        endcase
+      end
+
       default: decoded_legal = 1'b0;  // 其余 opcode 尚未实现
     endcase
   end
@@ -162,10 +177,14 @@ module rv32i_core #(
           if (!decoded_legal) begin
             trap  <= 1'b1;
             state <= S_TRAP;
+          end else if ((opcode == 7'b1100011) && (|decoded_next_pc[1:0])) begin
+            // 无 C 扩展, 分支目标必须 4 字节对齐, 否则视为非法.
+            trap  <= 1'b1;
+            state <= S_TRAP;
           end else begin
             if (decoded_write_rd && rd != 5'd0)
               regs[rd] <= decoded_result;
-            pc     <= pc + 32'd4;
+            pc     <= decoded_next_pc;
             retire <= 1'b1;
             state  <= S_FETCH;
           end
