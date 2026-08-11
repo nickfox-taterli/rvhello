@@ -1,65 +1,104 @@
 `default_nettype none
 
-// 简单定时器从端: 自由计数器 + 比较阈值 + pending 标志.
-// 地址 0x1000_0020-0x1000_002f 内部再用 addr[3:2] 分址:
-//   0x...20 (2'b00) counter  RO  自由运行 32 位计数, 复位为 0
-//   0x...24 (2'b01) compare  RW  阈值, 复位为全 1 (默认不命中)
-//   0x...28 (2'b10) pending  R=状态; W(有 wstrb)=清除
-// pending 置位用"上一拍稳定的 counter/compare"判定: counter==compare 那拍把它锁高,
-// 这样两边都在变也不会漏掉命中. pending 直接作为 CPU 的机器定时器中断输入.
-module timer (
-  input  wire        clk,
-  input  wire        resetn,
-  input  wire        sel_valid,    // 译码器已 AND 上地址命中 (0x1000_002x)
-  input  wire [31:0] mem_addr,     // 只用 [3:2] 分址
-  input  wire [31:0] mem_wdata,
-  input  wire [3:0]  mem_wstrb,
-  output wire        mem_ready,
-  output reg  [31:0] mem_rdata,
-  output wire        timer_pending
+// CLINT 风格的机器态定时器和软件中断从端.
+// 基址由总线译码器固定为 0x0200_0000,这里使用低 16 位分址:
+//   0x0000 + 4*hart       msip[hart]      RW,只有 bit 0 有效
+//   0x4000 + 8*hart       mtimecmp[hart]  RW,低 32 位
+//   0x4004 + 8*hart       mtimecmp[hart]  RW,高 32 位
+//   0xbff8                mtime           RW,低 32 位
+//   0xbffc                mtime           RW,高 32 位
+// MTIP 是电平信号,mtime >= mtimecmp 时为 1.软件通过更新 mtimecmp 撤销它.
+module timer #(
+  parameter integer HARTS = 1
+) (
+  input  wire             clk,
+  input  wire             resetn,
+  input  wire             sel_valid,
+  input  wire [31:0]      mem_addr,
+  input  wire [31:0]      mem_wdata,
+  input  wire [3:0]       mem_wstrb,
+  output wire             mem_ready,
+  output reg  [31:0]      mem_rdata,
+  output wire [HARTS-1:0] timer_mtip,
+  output wire [HARTS-1:0] timer_msip
 );
-  reg [31:0] counter;
-  reg [31:0] compare;
-  reg        pending;
+  localparam [15:0] MTIMECMP_BASE = 16'h4000;
+  localparam [15:0] MTIME_LO       = 16'hbff8;
+  localparam [15:0] MTIME_HI       = 16'hbffc;
 
-  // 0 拍从端: 命中即就绪.
-  assign mem_ready = sel_valid;
+  reg [63:0] mtime;
+  reg [63:0] mtimecmp [0:HARTS-1];
+  reg [HARTS-1:0] msip;
+  integer hart;
 
-  wire wr_compare = sel_valid && (mem_addr[3:2] == 2'b01) && (|mem_wstrb);
-  wire wr_pending = sel_valid && (mem_addr[3:2] == 2'b10) && (|mem_wstrb);
+  assign mem_ready  = sel_valid;
+  assign timer_msip = msip;
+
+  genvar gen_hart;
+  generate
+    for (gen_hart = 0; gen_hart < HARTS; gen_hart = gen_hart + 1) begin : gen_irq
+      assign timer_mtip[gen_hart] = (mtime >= mtimecmp[gen_hart]);
+    end
+  endgenerate
 
   always @(posedge clk) begin
     if (!resetn) begin
-      counter  <= 32'd0;
-      compare  <= 32'hFFFF_FFFF;
-      pending  <= 1'b0;
+      mtime <= 64'd0;
+      msip  <= {HARTS{1'b0}};
+      for (hart = 0; hart < HARTS; hart = hart + 1)
+        mtimecmp[hart] <= 64'hffff_ffff_ffff_ffff;
     end else begin
-      counter <= counter + 32'd1;
-      // 用当前(本拍开始时已稳定)的 counter/compare 判命中 -> 命中则拉高 pending.
-      if (counter == compare) pending <= 1'b1;
-      // 写 compare: 按字节使能更新, 下一拍才参与比较.
-      if (wr_compare) begin
-        if (mem_wstrb[0]) compare[ 7: 0] <= mem_wdata[ 7: 0];
-        if (mem_wstrb[1]) compare[15: 8] <= mem_wdata[15: 8];
-        if (mem_wstrb[2]) compare[23:16] <= mem_wdata[23:16];
-        if (mem_wstrb[3]) compare[31:24] <= mem_wdata[31:24];
+      mtime <= mtime + 64'd1;
+
+      if (sel_valid && (|mem_wstrb)) begin
+        // RV32 软件会分两次访问 64 位寄存器,每次写仍保留字节使能.
+        if (mem_addr[15:0] == MTIME_LO) begin
+          if (mem_wstrb[0]) mtime[ 7: 0] <= mem_wdata[ 7: 0];
+          if (mem_wstrb[1]) mtime[15: 8] <= mem_wdata[15: 8];
+          if (mem_wstrb[2]) mtime[23:16] <= mem_wdata[23:16];
+          if (mem_wstrb[3]) mtime[31:24] <= mem_wdata[31:24];
+        end
+        if (mem_addr[15:0] == MTIME_HI) begin
+          if (mem_wstrb[0]) mtime[39:32] <= mem_wdata[ 7: 0];
+          if (mem_wstrb[1]) mtime[47:40] <= mem_wdata[15: 8];
+          if (mem_wstrb[2]) mtime[55:48] <= mem_wdata[23:16];
+          if (mem_wstrb[3]) mtime[63:56] <= mem_wdata[31:24];
+        end
+
+        for (hart = 0; hart < HARTS; hart = hart + 1) begin
+          if (mem_addr[15:0] == (16'h0000 + hart * 4)) begin
+            if (mem_wstrb[0]) msip[hart] <= mem_wdata[0];
+          end
+          if (mem_addr[15:0] == (MTIMECMP_BASE + hart * 8)) begin
+            if (mem_wstrb[0]) mtimecmp[hart][ 7: 0] <= mem_wdata[ 7: 0];
+            if (mem_wstrb[1]) mtimecmp[hart][15: 8] <= mem_wdata[15: 8];
+            if (mem_wstrb[2]) mtimecmp[hart][23:16] <= mem_wdata[23:16];
+            if (mem_wstrb[3]) mtimecmp[hart][31:24] <= mem_wdata[31:24];
+          end
+          if (mem_addr[15:0] == (MTIMECMP_BASE + hart * 8 + 4)) begin
+            if (mem_wstrb[0]) mtimecmp[hart][39:32] <= mem_wdata[ 7: 0];
+            if (mem_wstrb[1]) mtimecmp[hart][47:40] <= mem_wdata[15: 8];
+            if (mem_wstrb[2]) mtimecmp[hart][55:48] <= mem_wdata[23:16];
+            if (mem_wstrb[3]) mtimecmp[hart][63:56] <= mem_wdata[31:24];
+          end
+        end
       end
-      // 软件写 0x...28 清 pending; 排在置位之后, 所以同一拍里清比置优先.
-      if (wr_pending) pending <= 1'b0;
     end
   end
 
-  // 组合读口: 按 addr[3:2] 选寄存器, 未定义偏移 (2'b11, 即 0x...2c) 返回 0.
   always @* begin
-    case (mem_addr[3:2])
-      2'b00:     mem_rdata = counter;
-      2'b01:     mem_rdata = compare;
-      2'b10:     mem_rdata = {31'd0, pending};
-      default:   mem_rdata = 32'd0;
-    endcase
+    mem_rdata = 32'd0;
+    if (mem_addr[15:0] == MTIME_LO) mem_rdata = mtime[31:0];
+    if (mem_addr[15:0] == MTIME_HI) mem_rdata = mtime[63:32];
+    for (hart = 0; hart < HARTS; hart = hart + 1) begin
+      if (mem_addr[15:0] == (16'h0000 + hart * 4))
+        mem_rdata = {31'd0, msip[hart]};
+      if (mem_addr[15:0] == (MTIMECMP_BASE + hart * 8))
+        mem_rdata = mtimecmp[hart][31:0];
+      if (mem_addr[15:0] == (MTIMECMP_BASE + hart * 8 + 4))
+        mem_rdata = mtimecmp[hart][63:32];
+    end
   end
-
-  assign timer_pending = pending;
 endmodule
 
 `default_nettype wire

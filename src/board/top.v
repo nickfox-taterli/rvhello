@@ -109,10 +109,12 @@ module soc #(
   wire        sram_ready;
   wire [31:0] sram_rdata;
   wire [31:0] gpio_out;
-  wire        timer_pending;
+  wire [0:0]  timer_mtip;
+  wire [0:0]  timer_msip;
 
   // 中断线
-  wire [31:0] irq_pending = {24'd0, timer_pending, 7'd0};
+  wire [31:0] irq_pending = {20'd0, 1'b0, 3'd0, timer_mtip[0],
+                             3'd0, timer_msip[0], 3'd0};
 
   clk_pll #(
     .CPU_HZ_MHZ(CPU_HZ_MHZ)
@@ -286,7 +288,9 @@ module soc #(
     .ser_tx    (uart_tx)
   );
 
-  timer timer_inst (
+  timer #(
+    .HARTS(1)
+  ) timer_inst (
     .clk          (cpu_clk),
     .resetn       (cpu_rstn),
     .sel_valid    (timer_valid),
@@ -295,7 +299,8 @@ module soc #(
     .mem_wstrb    (mem_wstrb),
     .mem_ready    (timer_ready),
     .mem_rdata    (timer_rdata),
-    .timer_pending(timer_pending)
+    .timer_mtip   (timer_mtip),
+    .timer_msip   (timer_msip)
   );
 
   seg_display #(
@@ -309,7 +314,7 @@ module soc #(
     .seg_digit(seg_digit)
   );
 
-  // 板载 LED 为低电平点亮. timer_pending 已接到 CPU 的 MTIP 输入.
+  // 板载 LED 为低电平点亮.CLINT 的 MTIP 和 MSIP 已接到 CPU 标准中断位.
   assign led = trap ? 8'h00 : ~gpio_out[7:0];
 endmodule
 

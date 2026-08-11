@@ -65,10 +65,10 @@ module tb_top;
     repeat (2) @(posedge clk);
     rst_n <= 1;
 
-    // 等固件写完 CSR,再把硬件 compare 拉近,不用仿真 50M 个时钟周期.
+    // 等固件写完 CSR,再把硬件 mtimecmp 拉近,不用仿真 50M 个时钟周期.
     wait (dut.impl.cpu.csr_mstatus[3] && dut.impl.cpu.csr_mie[7]);
     @(negedge dut.impl.cpu_clk);
-    dut.impl.timer_inst.compare = dut.impl.timer_inst.counter + 32'd20;
+    dut.impl.timer_inst.mtimecmp[0] = dut.impl.timer_inst.mtime + 64'd20;
 
     wait (gpio_writes >= 2);
     wait (dut.impl.cpu.csr_mstatus[3]);
@@ -94,7 +94,18 @@ module tb_top;
     if (dut.impl.cpu.csr_mcause !== 32'h8000_000b)
       $fatal(1, "多 IRQ 优先级预期 cause 11 得 %08x", dut.impl.cpu.csr_mcause);
 
-    $display("TOP IRQ PASS: priority cause=%08x, GPIO %02x->%02x, MRET restored MIE",
+    // 单独置 MSIP,确认 CLINT 软件中断接到标准 cause 3.
+    @(negedge dut.impl.cpu_clk);
+    dut.impl.cpu.csr_mie[3] = 1'b1;
+    dut.impl.timer_inst.msip[0] = 1'b1;
+    wait (dut.impl.cpu.csr_mcause == 32'h8000_0003);
+    @(negedge dut.impl.cpu_clk);
+    dut.impl.timer_inst.msip[0] = 1'b0;
+    wait (dut.impl.cpu.csr_mstatus[3]);
+    if (dut.impl.cpu.csr_mcause !== 32'h8000_0003)
+      $fatal(1, "MSIP 应进入 machine software interrupt 得 %08x", dut.impl.cpu.csr_mcause);
+
+    $display("TOP IRQ PASS: MSIP cause=%08x, GPIO %02x->%02x, MRET restored MIE",
              dut.impl.cpu.csr_mcause, gpio_value[0], gpio_value[1]);
     $finish;
   end

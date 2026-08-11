@@ -15,9 +15,11 @@ RV32I 单核, 取指与访存共用一组 valid/ready 总线, 经地址译码器
 | 0x0000_0000 - 0x0000_3fff | BRAM 16 KiB | 代码 / 数据 / 栈 |
 | 0x1000_0000 | GPIO | 字写 LED 输出, 字读回 |
 | 0x1000_0010 | UART TX | 同地址读写分离: 写低字节=发送, 读 bit0=busy |
-| 0x1000_0020 / 24 / 28 | Timer | counter(RO) / compare(RW) / pending(R=状态, W=清除) |
+| 0x0200_0000 + 4*hart | CLINT MSIP | 软件中断位,RW |
+| 0x0200_4000 + 8*hart | CLINT MTIMECMP | 64 位机器定时器比较值,RW |
+| 0x0200_bff8 | CLINT MTIME | 64 位机器定时器计数,RW |
 
-CPU 使用 32 位 IRQ pending 向量,位号直接对应 `mcause`; Timer pending 当前接到 bit 7(MTIP),后续可直接加入软件/外部/平台中断.核实现标准机器态异常入口和精确 `mepc`,并提供 `mstatus`, `mie`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mip`,机器 ID 以及 64 位 `mcycle/minstret`.用户别名 `cycle/instret` 为只读,所有 CSR 的 WARL/WPRI 掩码在 RTL 中显式处理.
+CPU 使用 32 位 IRQ pending 向量,位号直接对应 `mcause`; CLINT 的 MSIP 和 MTIP 分别接到 bit 3 和 bit 7.CLINT 使用常见寄存器布局,当前实例化一个 hart,RTL 参数可以扩展多个 hart 的 `msip` 和 `mtimecmp`,所有 hart 共用 `mtime`.核实现标准机器态异常入口和精确 `mepc`,并提供 `mstatus`, `mie`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mip`,机器 ID 以及 64 位 `mcycle/minstret`.用户别名 `cycle/instret` 为只读,所有 CSR 的 WARL/WPRI 掩码在 RTL 中显式处理.
 
 ECALL,非法指令,指令/Load/Store 地址不对齐以及三类访问错误都会写入 `mcause/mepc/mtval` 后跳到 `mtvec`.WFI 会停止取指直到本地使能的中断待决或调试 halt,FENCE.I 会丢弃取指状态并从下一条指令重新取指.
 

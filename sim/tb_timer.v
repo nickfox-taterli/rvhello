@@ -1,91 +1,105 @@
 `timescale 1ns / 1ps
 
-// timer 单元测试: 验证 counter 自由跑, counter==compare 时 pending 置位,
-// 写 0x28 清除, 重设 compare 后能再次命中. 全程 sel_valid=1 恒选中, 组合读口.
+// CLINT 单元测试: 覆盖 64 位寄存器,MTIP 电平语义,MSIP 和多 hart 布局.
 module tb_timer;
   reg         clk = 0;
   reg         resetn = 0;
+  reg         sel_valid = 1;
   reg  [31:0] mem_addr;
   reg  [31:0] mem_wdata;
   reg  [3:0]  mem_wstrb;
   wire        mem_ready;
   wire [31:0] mem_rdata;
-  wire        timer_pending;
+  wire [1:0]  timer_mtip;
+  wire [1:0]  timer_msip;
 
   always #5 clk = ~clk;
 
-  timer dut (
-    .clk          (clk),
-    .resetn       (resetn),
-    .sel_valid    (1'b1),
-    .mem_addr     (mem_addr),
-    .mem_wdata    (mem_wdata),
-    .mem_wstrb    (mem_wstrb),
-    .mem_ready    (mem_ready),
-    .mem_rdata    (mem_rdata),
-    .timer_pending(timer_pending)
+  timer #(
+    .HARTS(2)
+  ) dut (
+    .clk       (clk),
+    .resetn    (resetn),
+    .sel_valid (sel_valid),
+    .mem_addr  (mem_addr),
+    .mem_wdata (mem_wdata),
+    .mem_wstrb (mem_wstrb),
+    .mem_ready (mem_ready),
+    .mem_rdata (mem_rdata),
+    .timer_mtip(timer_mtip),
+    .timer_msip(timer_msip)
   );
 
-  // 写寄存器: negedge 放好地址/数据/选通, 让一个 posedge 落进去, 再撤选通.
   task wr_reg(input [31:0] a, input [31:0] d);
     begin
       @(negedge clk);
       mem_addr  = a;
       mem_wdata = d;
-      mem_wstrb = 4'hF;
+      mem_wstrb = 4'hf;
       @(posedge clk);
       @(negedge clk);
       mem_wstrb = 4'h0;
     end
   endtask
 
-  reg [31:0] cnt;
+  task expect_reg(input [31:0] a, input [31:0] d);
+    begin
+      @(negedge clk);
+      mem_addr = a;
+      #1;
+      if (mem_rdata !== d)
+        $fatal(1, "地址 %08x 预期 %08x 得 %08x", a, d, mem_rdata);
+    end
+  endtask
+
   initial begin
     $dumpfile("build/timer.vcd");
     $dumpvars(0, dut);
 
-    mem_addr = 32'h0; mem_wdata = 32'h0; mem_wstrb = 4'h0;
+    mem_addr = 0; mem_wdata = 0; mem_wstrb = 0;
     repeat (2) @(posedge clk);
     resetn = 1;
 
-    // compare 复位应为全 1 (默认不命中).
-    @(negedge clk); mem_addr = 32'h24; #1;
-    if (mem_rdata !== 32'hFFFF_FFFF)
-      $fatal(1, "compare 复位预期 FFFFFFFF 得 %08x", mem_rdata);
+    expect_reg(32'h0200_4000, 32'hffff_ffff);
+    expect_reg(32'h0200_4004, 32'hffff_ffff);
+    expect_reg(32'h0200_4008, 32'hffff_ffff);
+    expect_reg(32'h0200_400c, 32'hffff_ffff);
+    if (timer_mtip !== 2'b00 || timer_msip !== 2'b00)
+      $fatal(1, "复位后的中断输出错误");
 
-    // 设 compare=10, counter 自由跑到 10 时 pending 应置位.
-    wr_reg(32'h24, 32'd10);
-    wait (timer_pending);
+    // 写 mtime 的高低半,证明计数器超过 32 位仍连续递增.
+    wr_reg(32'h0200_bffc, 32'h0000_0001);
+    wr_reg(32'h0200_bff8, 32'hffff_fff0);
+    repeat (24) @(posedge clk);
+    expect_reg(32'h0200_bffc, 32'h0000_0002);
+
+    // hart 0 的阈值放在过去应置 MTIP,调高后应立即撤销.
+    wr_reg(32'h0200_4004, 32'h0000_0002);
+    wr_reg(32'h0200_4000, 32'h0000_0000);
     #1;
-    if (timer_pending !== 1'b1)
-      $fatal(1, "counter==compare 时 pending 未置位");
-
-    // 读 counter, 命中那拍之后 counter 仍在涨, 应 >= 10.
-    @(negedge clk); mem_addr = 32'h20; #1;
-    if (mem_rdata < 32'd10)
-      $fatal(1, "counter 应 >= 10 得 %08x", mem_rdata);
-    cnt = mem_rdata;
-
-    // 写 0x28 清 pending.
-    wr_reg(32'h28, 32'd1);
+    if (timer_mtip !== 2'b01)
+      $fatal(1, "hart 0 MTIP 未按 mtime >= mtimecmp 置位");
+    wr_reg(32'h0200_4004, 32'hffff_ffff);
     #1;
-    if (timer_pending !== 1'b0)
-      $fatal(1, "写 0x28 未清除 pending");
+    if (timer_mtip !== 2'b00)
+      $fatal(1, "调高 hart 0 mtimecmp 后 MTIP 未撤销");
 
-    // 重设 compare = 读到的 counter + 10, 应再次命中.
-    wr_reg(32'h24, cnt + 32'd10);
-    wait (timer_pending);
+    // 第二个 hart 使用下一组寄存器,不能影响 hart 0.
+    wr_reg(32'h0200_400c, 32'h0000_0002);
+    wr_reg(32'h0200_4008, 32'h0000_0000);
     #1;
-    if (timer_pending !== 1'b1)
-      $fatal(1, "重设 compare 后 pending 未再次置位");
+    if (timer_mtip !== 2'b10)
+      $fatal(1, "hart 1 mtimecmp 布局或 MTIP 输出错误");
 
-    // 再清一次, 确认可重复.
-    wr_reg(32'h28, 32'd1);
-    #1;
-    if (timer_pending !== 1'b0)
-      $fatal(1, "第二次清除失败");
+    wr_reg(32'h0200_0004, 32'h0000_0001);
+    if (timer_msip !== 2'b10)
+      $fatal(1, "hart 1 MSIP 未置位");
+    expect_reg(32'h0200_0004, 32'h0000_0001);
+    wr_reg(32'h0200_0004, 32'h0000_0000);
+    if (timer_msip !== 2'b00)
+      $fatal(1, "hart 1 MSIP 未清零");
 
-    $display("TIMER PASS: counter/compare/pending 置位与清除正确");
+    $display("TIMER PASS: CLINT 64-bit mtime/mtimecmp, MTIP, MSIP and 2-hart layout");
     $finish;
   end
 

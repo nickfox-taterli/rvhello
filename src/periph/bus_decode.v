@@ -1,7 +1,7 @@
 `default_nettype none
 
 // SoC 地址译码器: 一主多从的纯组合分发, 没有时钟也没有状态.
-// 核(唯一主端)的 valid/ready 总线在这里按地址高位拆给 BRAM / GPIO / UART / Timer;
+// 核(唯一主端)的 valid/ready 总线在这里按地址高位拆给 BRAM / CLINT / GPIO / UART;
 // 命中谁就把请求转给谁,没命中就当拍 ready+error,既不挂死也不传播 X.
 // 取指只能落在 BRAM,外设和 SRAM 都没有执行权限.
 module bus_decode #(
@@ -48,14 +48,14 @@ module bus_decode #(
   //   0x0000_0000 - (BRAM_WORDS*4-1)  BRAM
   //   0x1000_0000              GPIO           (addr[31:28]==1, [27:8]==0, [7:4]==0)
   //   0x1000_0010              UART           (同上, [7:4]==1)
-  //   0x1000_0020 / 24 / 28    Timer          (同上, [7:4]==2, 内部再用 [3:2] 分址)
+  //   0x0200_0000 - 0x0200_ffff CLINT          (内部使用标准 msip/mtimecmp/mtime 偏移)
   //   0x2000_0000 - 0x200f_ffff 外部 SRAM (普通数据区, 不允许取指)
   localparam integer BRAM_HIGH_LSB = $clog2(BRAM_WORDS) + 2;
   wire sel_bram = (m_addr[31:BRAM_HIGH_LSB] == {(32-BRAM_HIGH_LSB){1'b0}});
   wire sel_mmio  = (m_addr[31:28] == 4'h1) && (m_addr[27:8] == 20'd0);
   wire sel_gpio  = sel_mmio && (m_addr[7:4] == 4'h0);
   wire sel_uart  = sel_mmio && (m_addr[7:4] == 4'h1);
-  wire sel_timer = sel_mmio && (m_addr[7:4] == 4'h2);
+  wire sel_timer = (m_addr[31:16] == 16'h0200);
   wire sel_sram  = (m_addr[31:20] == 12'h200);
 
   // 只把 valid 发给命中的从端, 其余从端 valid=0, 不会产生任何写副作用.
