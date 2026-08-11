@@ -1,48 +1,86 @@
 `default_nettype none
 
-// SoC 顶层: RV32I 核 + 地址译码器 + BRAM/GPIO/UART/Timer 四个从端.
-// 地址地图见 bus_decode: BRAM 0x0-0x3fff, GPIO 0x1000_0000, UART 0x1000_0010,
-// Timer 0x1000_0020/24/28. 数码管仍显示架构 PC, LED 平时由 GPIO 驱动, trap 时全亮覆盖.
-// 板上串口 TX 接 CP2102 (L18, 115200-8N1).
-module top #(
-  parameter integer CLOCK_HZ   = 50_000_000,
+// SoC 顶层: RV32I 核 + 地址译码器 + BRAM/GPIO/UART/Timer/SRAM 从端.
+// 外部 SRAM 固定映射为普通数据区 0x2000_0000-0x200f_ffff. 指令只能从 BRAM 取出.
+// 数码管显示架构 PC. LED 平时由 GPIO 驱动, trap 时全亮覆盖.
+module soc #(
+  parameter integer CPU_HZ_MHZ = 100,
   parameter integer REFRESH_HZ = 400,
   parameter integer UART_BAUD  = 115200,
   parameter         MEMFILE    = "program.hex",
-  parameter integer MEM_WORDS  = 4096          // 16 KiB, 覆盖代码/数据/栈
+  parameter integer MEM_WORDS  = 4096
 ) (
-    input  wire       clk,
-    input  wire       rst_n,
-    output wire [7:0] led,
-    output wire [7:0] seg,
-    output wire [5:0] seg_digit,
-    output wire       uart_tx
+  input  wire        clk,
+  input  wire        rst_n,
+  output wire [7:0]  led,
+  output wire [7:0]  seg,
+  output wire [5:0]  seg_digit,
+  output wire        uart_tx,
+  output wire [18:0] sram_addr,
+  inout  wire [31:0] sram_dq,
+  output wire        sram0_ce_n,
+  output wire        sram1_ce_n,
+  output wire        sram0_oe_n,
+  output wire        sram1_oe_n,
+  output wire        sram0_we_n,
+  output wire        sram1_we_n,
+  output wire        sram0_lb_n,
+  output wire        sram0_ub_n,
+  output wire        sram1_lb_n,
+  output wire        sram1_ub_n
 );
+  // 板载 50MHz 经 MMCM 产生 cpu_clk. CLOCK_HZ 同时供 UART 和数码管分频使用.
+  localparam integer CLOCK_HZ = CPU_HZ_MHZ * 1000000;
+
+  wire        cpu_clk;
+  wire        cpu_rstn;
+  wire        pll_locked;
   wire        trap;
   wire [31:0] pc;
 
-  // 核(主端) <-> 译码器 之间的总线. mem_instr 现在要送进译码器做取指越界保护.
+  // 核和译码器之间的总线.
   wire        mem_valid;
   wire        mem_instr;
   wire        mem_ready;
   wire [31:0] mem_addr;
   wire [31:0] mem_wdata;
   wire [31:0] mem_rdata;
-  wire [ 3:0] mem_wstrb;
+  wire [3:0]  mem_wstrb;
 
   // 各从端独立的 valid/ready/rdata, 由译码器按地址分发.
-  wire        bram_valid,  bram_ready;  wire [31:0] bram_rdata;
-  wire        gpio_valid,  gpio_ready;  wire [31:0] gpio_rdata;
-  wire        uart_valid,  uart_ready;  wire [31:0] uart_rdata;
-  wire        timer_valid, timer_ready; wire [31:0] timer_rdata;
+  wire        bram_valid;
+  wire        bram_ready;
+  wire [31:0] bram_rdata;
+  wire        gpio_valid;
+  wire        gpio_ready;
+  wire [31:0] gpio_rdata;
+  wire        uart_valid;
+  wire        uart_ready;
+  wire [31:0] uart_rdata;
+  wire        timer_valid;
+  wire        timer_ready;
+  wire [31:0] timer_rdata;
+  wire        sram_valid;
+  wire        sram_ready;
+  wire [31:0] sram_rdata;
   wire [31:0] gpio_out;
   wire        timer_pending;
+
+  clk_pll #(
+    .CPU_HZ_MHZ(CPU_HZ_MHZ)
+  ) pll (
+    .clk_in   (clk),
+    .ext_rst_n(rst_n),
+    .clk_cpu  (cpu_clk),
+    .resetn   (cpu_rstn),
+    .locked   (pll_locked)
+  );
 
   rv32i_core #(
     .RESET_PC(32'h0000_0000)
   ) cpu (
-    .clk      (clk),
-    .resetn   (rst_n),
+    .clk      (cpu_clk),
+    .resetn   (cpu_rstn),
     .trap     (trap),
     .mem_valid(mem_valid),
     .mem_instr(mem_instr),
@@ -55,7 +93,9 @@ module top #(
     .pc       (pc)
   );
 
-  bus_decode bus (
+  bus_decode #(
+    .BRAM_WORDS(MEM_WORDS)
+  ) bus (
     .m_valid      (mem_valid),
     .m_instr      (mem_instr),
     .m_addr       (mem_addr),
@@ -63,18 +103,29 @@ module top #(
     .m_wstrb      (mem_wstrb),
     .m_ready      (mem_ready),
     .m_rdata      (mem_rdata),
-    .s_bram_valid (bram_valid),  .s_bram_ready (bram_ready),  .s_bram_rdata (bram_rdata),
-    .s_gpio_valid (gpio_valid),  .s_gpio_ready (gpio_ready),  .s_gpio_rdata (gpio_rdata),
-    .s_uart_valid (uart_valid),  .s_uart_ready (uart_ready),  .s_uart_rdata (uart_rdata),
-    .s_timer_valid(timer_valid), .s_timer_ready(timer_ready), .s_timer_rdata(timer_rdata)
+    .s_bram_valid (bram_valid),
+    .s_bram_ready (bram_ready),
+    .s_bram_rdata (bram_rdata),
+    .s_gpio_valid (gpio_valid),
+    .s_gpio_ready (gpio_ready),
+    .s_gpio_rdata (gpio_rdata),
+    .s_uart_valid (uart_valid),
+    .s_uart_ready (uart_ready),
+    .s_uart_rdata (uart_rdata),
+    .s_timer_valid(timer_valid),
+    .s_timer_ready(timer_ready),
+    .s_timer_rdata(timer_rdata),
+    .s_sram_valid (sram_valid),
+    .s_sram_ready (sram_ready),
+    .s_sram_rdata (sram_rdata)
   );
 
-  // 统一程序/数据后端: 自己管 valid/ready 握手, 核只管按住 valid 等 ready.
+  // BRAM 保存程序镜像和片上数据. 外部 SRAM 只通过自己的地址区访问.
   prog_mem #(
     .WORDS  (MEM_WORDS),
     .MEMFILE(MEMFILE)
   ) mem (
-    .clk       (clk),
+    .clk       (cpu_clk),
     .mem_valid (bram_valid),
     .mem_addr  (mem_addr),
     .mem_wdata (mem_wdata),
@@ -83,9 +134,33 @@ module top #(
     .mem_rdata (bram_rdata)
   );
 
+  // 板级异步 SRAM 控制器按 100MHz 使用, 因此实际 SRAM 顶层固定为 top_sram.
+  sram_async ext_mem (
+    .clk       (cpu_clk),
+    .resetn    (cpu_rstn),
+    .mem_valid (sram_valid),
+    .mem_addr  (mem_addr),
+    .mem_wdata (mem_wdata),
+    .mem_wstrb (mem_wstrb),
+    .mem_ready (sram_ready),
+    .mem_rdata (sram_rdata),
+    .sram_addr (sram_addr),
+    .sram_dq   (sram_dq),
+    .sram0_ce_n(sram0_ce_n),
+    .sram1_ce_n(sram1_ce_n),
+    .sram0_oe_n(sram0_oe_n),
+    .sram1_oe_n(sram1_oe_n),
+    .sram0_we_n(sram0_we_n),
+    .sram1_we_n(sram1_we_n),
+    .sram0_lb_n(sram0_lb_n),
+    .sram0_ub_n(sram0_ub_n),
+    .sram1_lb_n(sram1_lb_n),
+    .sram1_ub_n(sram1_ub_n)
+  );
+
   gpio gpio_inst (
-    .clk       (clk),
-    .resetn    (rst_n),
+    .clk       (cpu_clk),
+    .resetn    (cpu_rstn),
     .sel_valid (gpio_valid),
     .mem_wdata (mem_wdata),
     .mem_wstrb (mem_wstrb),
@@ -98,8 +173,8 @@ module top #(
     .CLK_HZ(CLOCK_HZ),
     .BAUD  (UART_BAUD)
   ) uart0 (
-    .clk       (clk),
-    .resetn    (rst_n),
+    .clk       (cpu_clk),
+    .resetn    (cpu_rstn),
     .sel_valid (uart_valid),
     .mem_wdata (mem_wdata),
     .mem_wstrb (mem_wstrb),
@@ -109,8 +184,8 @@ module top #(
   );
 
   timer timer_inst (
-    .clk          (clk),
-    .resetn       (rst_n),
+    .clk          (cpu_clk),
+    .resetn       (cpu_rstn),
     .sel_valid    (timer_valid),
     .mem_addr     (mem_addr),
     .mem_wdata    (mem_wdata),
@@ -124,16 +199,112 @@ module top #(
     .CLOCK_HZ  (CLOCK_HZ),
     .REFRESH_HZ(REFRESH_HZ)
   ) seg_inst (
-    .clk      (clk),
-    .resetn   (rst_n),
+    .clk      (cpu_clk),
+    .resetn   (cpu_rstn),
     .disp_data(pc[23:0]),
     .seg      (seg),
     .seg_digit(seg_digit)
   );
 
-  // 平时 LED 反映 GPIO 输出(板载低电平点亮, 故取反); trap 时全亮, 把停机顶出来.
-  // timer_pending 暂时只内部观测, 没接中断也没占 LED.
+  // 板载 LED 为低电平点亮. timer_pending 暂时只内部观测.
   assign led = trap ? 8'h00 : ~gpio_out[7:0];
+endmodule
+
+// 日常 BRAM 顶层. SRAM 端口未引出, 因而此顶层的固件不能访问外部 SRAM 地址区.
+module top #(
+  parameter integer CPU_HZ_MHZ = 100,
+  parameter integer REFRESH_HZ = 400,
+  parameter integer UART_BAUD  = 115200,
+  parameter         MEMFILE    = "program.hex",
+  parameter integer MEM_WORDS  = 4096
+) (
+  input  wire       clk,
+  input  wire       rst_n,
+  output wire [7:0] led,
+  output wire [7:0] seg,
+  output wire [5:0] seg_digit,
+  output wire       uart_tx
+);
+  soc #(
+    .CPU_HZ_MHZ(CPU_HZ_MHZ),
+    .REFRESH_HZ(REFRESH_HZ),
+    .UART_BAUD (UART_BAUD),
+    .MEMFILE   (MEMFILE),
+    .MEM_WORDS (MEM_WORDS)
+  ) impl (
+    .clk       (clk),
+    .rst_n     (rst_n),
+    .led       (led),
+    .seg       (seg),
+    .seg_digit (seg_digit),
+    .uart_tx   (uart_tx),
+    .sram_addr (),
+    .sram_dq   (),
+    .sram0_ce_n(),
+    .sram1_ce_n(),
+    .sram0_oe_n(),
+    .sram1_oe_n(),
+    .sram0_we_n(),
+    .sram1_we_n(),
+    .sram0_lb_n(),
+    .sram0_ub_n(),
+    .sram1_lb_n(),
+    .sram1_ub_n()
+  );
+endmodule
+
+// 外部 SRAM 顶层. CPU 固定 100MHz, SRAM 是普通数据区, 不保存程序镜像.
+module top_sram #(
+  parameter integer REFRESH_HZ = 400,
+  parameter integer UART_BAUD  = 115200,
+  parameter         MEMFILE    = "program.hex",
+  parameter integer MEM_WORDS  = 16384
+) (
+  input  wire        clk,
+  input  wire        rst_n,
+  output wire [7:0]  led,
+  output wire [7:0]  seg,
+  output wire [5:0]  seg_digit,
+  output wire        uart_tx,
+  output wire [18:0] sram_addr,
+  inout  wire [31:0] sram_dq,
+  output wire        sram0_ce_n,
+  output wire        sram1_ce_n,
+  output wire        sram0_oe_n,
+  output wire        sram1_oe_n,
+  output wire        sram0_we_n,
+  output wire        sram1_we_n,
+  output wire        sram0_lb_n,
+  output wire        sram0_ub_n,
+  output wire        sram1_lb_n,
+  output wire        sram1_ub_n
+);
+  soc #(
+    .CPU_HZ_MHZ(100),
+    .REFRESH_HZ(REFRESH_HZ),
+    .UART_BAUD (UART_BAUD),
+    .MEMFILE   (MEMFILE),
+    .MEM_WORDS (MEM_WORDS)
+  ) impl (
+    .clk       (clk),
+    .rst_n     (rst_n),
+    .led       (led),
+    .seg       (seg),
+    .seg_digit (seg_digit),
+    .uart_tx   (uart_tx),
+    .sram_addr (sram_addr),
+    .sram_dq   (sram_dq),
+    .sram0_ce_n(sram0_ce_n),
+    .sram1_ce_n(sram1_ce_n),
+    .sram0_oe_n(sram0_oe_n),
+    .sram1_oe_n(sram1_oe_n),
+    .sram0_we_n(sram0_we_n),
+    .sram1_we_n(sram1_we_n),
+    .sram0_lb_n(sram0_lb_n),
+    .sram0_ub_n(sram0_ub_n),
+    .sram1_lb_n(sram1_lb_n),
+    .sram1_ub_n(sram1_ub_n)
+  );
 endmodule
 
 `default_nettype wire

@@ -37,9 +37,8 @@ module rv32i_core #(
   reg  [1:0]  state;
   reg  [31:0] ir;
 
-  // 教学版采用异步读口, 同步写口. 易读, 综合为 LUT/FF; 后续再比较寄存器堆实现.
+  // 双异步读口, 同步写口. x0 通过读旁路固定为零, 不依赖数组单元内容.
   reg  [31:0] regs [0:31];
-  integer     register_index;
 
   // 指令字段只是 ir 的切片, 不占额外寄存器.
   wire [6:0] opcode = ir[6:0];
@@ -49,7 +48,6 @@ module rv32i_core #(
   wire [4:0] rs1    = ir[19:15];
   wire [4:0] rs2    = ir[24:20];
 
-  // x0 必须始终读出零, 不依赖数组单元内容.
   wire [31:0] rs1_value = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
   wire [31:0] rs2_value = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
 
@@ -60,6 +58,14 @@ module rv32i_core #(
   wire [4:0]  shamt = ir[24:20];
   wire [31:0] imm_b = {{19{ir[31]}}, ir[31], ir[7], ir[30:25], ir[11:8], 1'b0};
   wire [31:0] imm_j = {{11{ir[31]}}, ir[31], ir[19:12], ir[20], ir[30:21], 1'b0};
+
+  // 固定使用一拍完成的 barrel shift.
+  wire [4:0] shift_amount = (opcode == 7'b0010011) ? shamt : rs2_value[4:0];
+  wire shift_right = (funct3 == 3'b101);
+  wire shift_arith = shift_right && (funct7 == 7'b0100000);
+  wire [31:0] barrel_shift_result = shift_right ?
+      (shift_arith ? ($signed(rs1_value) >>> shift_amount) : (rs1_value >> shift_amount)) :
+      (rs1_value << shift_amount);
 
   // 组合译码只计算候选动作; 真正改 PC/寄存器/总线的操作集中在时序块.
   reg        decoded_legal;
@@ -104,10 +110,10 @@ module rv32i_core #(
           3'b100: decoded_result = rs1_value ^ imm_i;                          // XORI
           3'b110: decoded_result = rs1_value | imm_i;                          // ORI
           3'b111: decoded_result = rs1_value & imm_i;                          // ANDI
-          3'b001: if (funct7 == 7'b0000000) decoded_result = rs1_value << shamt;  // SLLI
-                  else decoded_legal = 1'b0;
-          3'b101: if (funct7 == 7'b0000000) decoded_result = rs1_value >> shamt;  // SRLI
-                  else if (funct7 == 7'b0100000) decoded_result = $signed(rs1_value) >>> shamt;  // SRAI
+          3'b001: if (funct7 == 7'b0000000) decoded_result = barrel_shift_result;  // SLLI
+          else decoded_legal = 1'b0;
+          3'b101: if (funct7 == 7'b0000000) decoded_result = barrel_shift_result;  // SRLI
+                  else if (funct7 == 7'b0100000) decoded_result = barrel_shift_result;  // SRAI
                   else decoded_legal = 1'b0;
           default: decoded_legal = 1'b0;
         endcase
@@ -129,10 +135,10 @@ module rv32i_core #(
                   else decoded_legal = 1'b0;
           3'b111: if (funct7 == 7'b0000000) decoded_result = rs1_value & rs2_value;  // AND
                   else decoded_legal = 1'b0;
-          3'b001: if (funct7 == 7'b0000000) decoded_result = rs1_value << rs2_value[4:0];  // SLL
-                  else decoded_legal = 1'b0;
-          3'b101: if (funct7 == 7'b0000000) decoded_result = rs1_value >> rs2_value[4:0];  // SRL
-                  else if (funct7 == 7'b0100000) decoded_result = $signed(rs1_value) >>> rs2_value[4:0];  // SRA
+          3'b001: if (funct7 == 7'b0000000) decoded_result = barrel_shift_result;  // SLL
+          else decoded_legal = 1'b0;
+          3'b101: if (funct7 == 7'b0000000) decoded_result = barrel_shift_result;  // SRL
+                  else if (funct7 == 7'b0100000) decoded_result = barrel_shift_result;  // SRA
                   else decoded_legal = 1'b0;
           default: decoded_legal = 1'b0;
         endcase
@@ -257,17 +263,17 @@ module rv32i_core #(
       pc           <= RESET_PC;
       ir           <= 32'd0;
       trap         <= 1'b0;
-      mem_valid    <= 1'b0;
-      mem_instr    <= 1'b0;
-      mem_addr     <= 32'd0;
+      // 复位即预发起第一条取指, 每次退休也预发起下一条取指.
+      mem_valid    <= 1'b1;
+      mem_instr    <= 1'b1;
+      mem_addr     <= RESET_PC;
       mem_wdata    <= 32'd0;
       mem_wstrb    <= 4'b0000;
       load_rd      <= 5'd0;
       load_funct3  <= 3'd0;
       load_lane    <= 2'd0;
       pending_load <= 1'b0;
-      for (register_index = 0; register_index < 32; register_index = register_index + 1)
-        regs[register_index] <= 32'd0;
+      // 不复位通用寄存器, x0 的读旁路始终返回零.
     end else begin
       case (state)
         S_FETCH: begin
@@ -311,6 +317,10 @@ module rv32i_core #(
               regs[rd] <= decoded_result;
             pc     <= decoded_next_pc;
             retire <= 1'b1;
+            mem_valid <= 1'b1;
+            mem_instr <= 1'b1;
+            mem_addr  <= decoded_next_pc;
+            mem_wstrb <= 4'b0000;
             state  <= S_FETCH;
           end
         end
@@ -330,6 +340,10 @@ module rv32i_core #(
             end
             pc     <= pc + 32'd4;
             retire <= 1'b1;
+            mem_valid <= 1'b1;
+            mem_instr <= 1'b1;
+            mem_addr  <= pc + 32'd4;
+            mem_wstrb <= 4'b0000;
             state  <= S_FETCH;
           end
         end

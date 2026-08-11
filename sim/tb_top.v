@@ -21,7 +21,7 @@ module tb_top;
   always #5 clk = ~clk;
 
   top #(
-    .CLOCK_HZ  (CLOCK_HZ),
+    .CPU_HZ_MHZ(CLOCK_HZ / 1000000),
     .REFRESH_HZ(REFRESH_HZ),
     .UART_BAUD (UART_BAUD),
     .MEMFILE   ("src/program.hex")
@@ -85,11 +85,11 @@ module tb_top;
   // 第一次 GPIO 写握手: 抓 wdata, 并确认它来自 GPO.WR (custom-0, ir.opcode=0x0b)
   // 而非普通 SW -- 这条断言就是 GPO.WR 译码走通的直接证据.
   always @(posedge clk) begin
-    if (rst_n && !gpio_seen && dut.gpio_valid && dut.gpio_ready && (|dut.mem_wstrb)) begin
-      gpio_first <= dut.mem_wdata;
+    if (rst_n && !gpio_seen && dut.impl.gpio_valid && dut.impl.gpio_ready && (|dut.impl.mem_wstrb)) begin
+      gpio_first <= dut.impl.mem_wdata;
       gpio_seen  <= 1'b1;
-      if (dut.cpu.ir[6:0] !== 7'b0001011)
-        $fatal(1, "首次 GPIO 写应来自 GPO.WR(custom-0 0x0b), 实际 ir.opcode=%07b", dut.cpu.ir[6:0]);
+      if (dut.impl.cpu.ir[6:0] !== 7'b0001011)
+        $fatal(1, "首次 GPIO 写应来自 GPO.WR(custom-0 0x0b), 实际 ir.opcode=%07b", dut.impl.cpu.ir[6:0]);
     end
   end
 

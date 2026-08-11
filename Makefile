@@ -3,10 +3,6 @@ VVP ?= vvp
 VIVADO ?= /home/taterli/tools/Xilinx/Vivado/2024.2/bin/vivado
 JOBS ?= 8
 
-RTL := src/core/rv32i_core.v src/core/prog_mem.v \
-       src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v \
-       src/board/top.v src/board/seg_display.v
-
 # RISC-V 工具链: PATH 里有的话直接用, 没有就找本地 xpack 安装补进 PATH.
 RISCV_PREFIX ?= riscv-none-elf-
 XPACK_BIN := $(firstword $(wildcard $(HOME)/.local/xpack/xpack-riscv-none-elf-gcc-*/bin))
@@ -19,7 +15,11 @@ RISCV_OBJCOPY := $(RISCV_PREFIX)objcopy
 RISCV_OBJDUMP := $(RISCV_PREFIX)objdump
 FW_FLAGS := -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles -Os -T fw/link.ld
 
-.PHONY: all sim sim-unit sim-timer sim-top fw create synth impl bitstream program clean
+RTL := src/core/rv32i_core.v src/core/prog_mem.v \
+       src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v \
+       src/board/clk_pll.v src/board/top.v src/board/seg_display.v src/periph/sram_async.v
+
+.PHONY: all sim sim-unit sim-timer sim-top sim-sram fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
 
 all: sim
 
@@ -36,6 +36,12 @@ build/timer.vvp: src/periph/timer.v sim/tb_timer.v | build
 
 sim-top: build/top.vvp
 	$(VVP) build/top.vvp
+
+sim-sram: build/sram_async.vvp
+	$(VVP) build/sram_async.vvp
+
+build/sram_async.vvp: src/periph/sram_async.v sim/tb_sram_async.v | build
+	$(IVERILOG) -g2012 -s tb_sram_async -o $@ src/periph/sram_async.v sim/tb_sram_async.v
 
 build/rv32i.vvp: src/core/rv32i_core.v src/core/prog_mem.v sim/tb_rv32i.v sim/program_core.hex | build
 	$(IVERILOG) -g2012 -s tb_rv32i -o $@ src/core/rv32i_core.v src/core/prog_mem.v sim/tb_rv32i.v
@@ -62,8 +68,14 @@ build/firmware.bin: build/firmware.elf
 create synth impl bitstream:
 	$(VIVADO) -mode batch -source script/vivado_flow.tcl -tclargs $@ $(JOBS)
 
+sram-create sram-synth sram-impl sram-bitstream:
+	$(VIVADO) -mode batch -source script/vivado_flow.tcl -tclargs $@ $(JOBS)
+
 program:
 	$(VIVADO) -mode batch -source script/vivado_flow.tcl -tclargs program
+
+sram-program:
+	$(VIVADO) -mode batch -source script/vivado_flow.tcl -tclargs sram-program
 
 clean:
 	rm -rf build rvhello.xpr rvhello.cache rvhello.hw rvhello.ip_user_files rvhello.runs rvhello.sim rvhello.srcs rvhello.gen .Xil xsim.dir
