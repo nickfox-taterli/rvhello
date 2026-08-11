@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-// rv32i_core 第 1 阶段仿真: 跑 LUI/AUIPC/ADDI 四条, 末尾 ECALL 触发 trap.
-// 通过层次路径读取内部寄存器, 逐条核对结果, 并确认停机时 PC=0x10.
+// rv32i_core 第 2 阶段仿真: 基础 ALU 与比较. 跑完 14 条后命中 ECALL 触发 trap.
+// 停机时一次性核对全部结果寄存器与 PC.
 module tb_rv32i;
   reg        clk    = 0;
   reg        resetn = 0;
@@ -50,50 +50,35 @@ module tb_rv32i;
       .rdata(mem_rdata)
   );
 
-  // 每个里程碑只校验一次.
-  reg c1, c2, c3, c4, c5;
-
   initial begin
     $dumpfile("build/rv32i.vcd");
     $dumpvars(0, dut);
 
-    c1 = 0; c2 = 0; c3 = 0; c4 = 0; c5 = 0;
-
     repeat (2) @(posedge clk);
     resetn <= 1;
 
-    forever @(posedge clk) begin
-      if (!c1 && pc == 32'd4) begin
-        c1 = 1;
-        if (dut.regs[1] !== 32'h0000_1000)
-          $fatal(1, "LUI: x1 expected 00001000 got %08x", dut.regs[1]);
-      end
-      if (!c2 && pc == 32'd8) begin
-        c2 = 1;
-        if (dut.regs[2] !== 32'h0000_0004)
-          $fatal(1, "AUIPC: x2 expected 00000004 got %08x", dut.regs[2]);
-      end
-      if (!c3 && pc == 32'd12) begin
-        c3 = 1;
-        if (dut.regs[3] !== 32'h0000_1005)
-          $fatal(1, "ADDI: x3 expected 00001005 got %08x", dut.regs[3]);
-      end
-      if (!c4 && pc == 32'd16) begin
-        c4 = 1;
-        if (dut.regs[4] !== 32'hFFFF_FFFF)
-          $fatal(1, "ADDI: x4 expected FFFFFFFF got %08x", dut.regs[4]);
-      end
-      if (!c5 && trap) begin
-        c5 = 1;
-        if (pc !== 32'h0000_0010)
-          $fatal(1, "trap pc expected 0x10 got %08x", pc);
-        if (dut.regs[1] !== 32'h0000_1000 || dut.regs[2] !== 32'h0000_0004 ||
-            dut.regs[3] !== 32'h0000_1005 || dut.regs[4] !== 32'hFFFF_FFFF)
-          $fatal(1, "final regs wrong");
-        $display("RV32I STAGE1 PASS: LUI/AUIPC/ADDI verified, trap@pc=0x10");
-        $finish;
-      end
-    end
+    wait (trap);
+    #1;
+
+    if (pc !== 32'h0000_0038)
+      $fatal(1, "trap pc expected 0x38 got %08x", pc);
+    if (dut.regs[ 1] !== 32'h0000_0007) $fatal(1, "x1  %08x", dut.regs[ 1]);
+    if (dut.regs[ 2] !== 32'hFFFF_FFFD) $fatal(1, "x2  %08x", dut.regs[ 2]);
+    if (dut.regs[ 3] !== 32'h0000_0004) $fatal(1, "x3  %08x", dut.regs[ 3]);
+    if (dut.regs[ 4] !== 32'h0000_000A) $fatal(1, "x4  %08x", dut.regs[ 4]);
+    if (dut.regs[ 5] !== 32'h0000_0001) $fatal(1, "x5  %08x", dut.regs[ 5]);
+    if (dut.regs[ 6] !== 32'h0000_0000) $fatal(1, "x6  %08x", dut.regs[ 6]);
+    if (dut.regs[ 7] !== 32'hFFFF_FFFA) $fatal(1, "x7  %08x", dut.regs[ 7]);
+    if (dut.regs[ 8] !== 32'hFFFF_FFFF) $fatal(1, "x8  %08x", dut.regs[ 8]);
+    if (dut.regs[ 9] !== 32'h0000_0005) $fatal(1, "x9  %08x", dut.regs[ 9]);
+    if (dut.regs[10] !== 32'h0000_0001) $fatal(1, "x10 %08x", dut.regs[10]);
+    if (dut.regs[11] !== 32'h0000_0000) $fatal(1, "x11 %08x", dut.regs[11]);
+    if (dut.regs[12] !== 32'h0000_0004) $fatal(1, "x12 %08x", dut.regs[12]);
+    if (dut.regs[13] !== 32'h0000_0087) $fatal(1, "x13 %08x", dut.regs[13]);
+    if (dut.regs[14] !== 32'h0000_0007) $fatal(1, "x14 %08x", dut.regs[14]);
+
+    $display("RV32I STAGE2 PASS: ALU/compare verified, trap@pc=0x38");
+    $finish;
   end
 
   initial begin

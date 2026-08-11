@@ -1,6 +1,14 @@
 `default_nettype none
 
-// 第1阶段实现 => LUI / AUIPC / ADDI
+// 第2阶段实现 => 第1阶段(LUI/AUIPC/ADDI) + 基础 ALU 与比较 (I 型 + R 型)
+
+// | 格式 | 主要用途 | 典型指令 |
+// | R 型 | 寄存器-寄存器 ALU | ADD, SUB, AND, OR, SLT |
+// | I 型 | 立即数 ALU、Load、JALR、系统指令 | ADDI, LW, JALR |
+// | S 型 | Store | SW, SH, SB |
+// | B 型 | 条件分支 | BEQ, BNE, BLT |
+// | U 型 | 高位立即数 | LUI, AUIPC |
+// | J 型 | 跳转 | JAL |
 module rv32i_core #(
     parameter [31:0] RESET_PC = 32'h0000_0000
 ) (
@@ -34,13 +42,16 @@ module rv32i_core #(
   // 指令字段只是 ir 的切片, 不占额外寄存器.
   wire [6:0] opcode = ir[6:0];
   wire [2:0] funct3 = ir[14:12];
+  wire [6:0] funct7 = ir[31:25];
   wire [4:0] rd     = ir[11:7];
   wire [4:0] rs1    = ir[19:15];
+  wire [4:0] rs2    = ir[24:20];
 
   // x0 必须始终读出零, 不依赖数组单元内容.
   wire [31:0] rs1_value = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
+  wire [31:0] rs2_value = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
 
-  // 第 1 阶段用到的立即数: I 型与 U 型.
+  // 第 1/2 阶段用到的立即数: I 型与 U 型.
   wire [31:0] imm_i = {{20{ir[31]}}, ir[31:20]};
   wire [31:0] imm_u = {ir[31:12], 12'b0};
 
@@ -67,12 +78,36 @@ module rv32i_core #(
       end
 
       7'b0010011: begin  // OP-IMM
-        if (funct3 == 3'b000) begin  // ADDI
-          decoded_result   = rs1_value + imm_i;
-          decoded_write_rd = 1'b1;
-        end else begin
-          decoded_legal = 1'b0;  // 其余 OP-IMM (SLTI/XORI/...) 留到后续阶段
-        end
+        decoded_write_rd = 1'b1;
+        case (funct3)
+          3'b000: decoded_result = rs1_value + imm_i;                          // ADDI
+          3'b010: decoded_result = {31'b0, $signed(rs1_value) < $signed(imm_i)};  // SLTI
+          3'b011: decoded_result = {31'b0, rs1_value < imm_i};                 // SLTIU
+          3'b100: decoded_result = rs1_value ^ imm_i;                          // XORI
+          3'b110: decoded_result = rs1_value | imm_i;                          // ORI
+          3'b111: decoded_result = rs1_value & imm_i;                          // ANDI
+          default: decoded_legal = 1'b0;
+        endcase
+      end
+
+      7'b0110011: begin  // OP (R 型)
+        decoded_write_rd = 1'b1;
+        case (funct3)
+          3'b000: if (funct7 == 7'b0000000) decoded_result = rs1_value + rs2_value;       // ADD
+                  else if (funct7 == 7'b0100000) decoded_result = rs1_value - rs2_value;  // SUB
+                  else decoded_legal = 1'b0;
+          3'b010: if (funct7 == 7'b0000000) decoded_result = {31'b0, $signed(rs1_value) < $signed(rs2_value)};  // SLT
+                  else decoded_legal = 1'b0;
+          3'b011: if (funct7 == 7'b0000000) decoded_result = {31'b0, rs1_value < rs2_value};  // SLTU
+                  else decoded_legal = 1'b0;
+          3'b100: if (funct7 == 7'b0000000) decoded_result = rs1_value ^ rs2_value;  // XOR
+                  else decoded_legal = 1'b0;
+          3'b110: if (funct7 == 7'b0000000) decoded_result = rs1_value | rs2_value;  // OR
+                  else decoded_legal = 1'b0;
+          3'b111: if (funct7 == 7'b0000000) decoded_result = rs1_value & rs2_value;  // AND
+                  else decoded_legal = 1'b0;
+          default: decoded_legal = 1'b0;  // SLL/SRL/SRA 留到第 3 阶段
+        endcase
       end
 
       default: decoded_legal = 1'b0;  // 其余 opcode 尚未实现
