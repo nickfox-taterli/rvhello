@@ -12,6 +12,12 @@ module soc #(
 ) (
   input  wire        clk,
   input  wire        rst_n,
+  input  wire        cpu_ttck,
+  input  wire        cpu_ttdi,
+  output wire        cpu_ttdo,
+  input  wire        cpu_ttms,
+  output wire        cpu_trtck,
+  input  wire        cpu_trst_n,
   output wire [7:0]  led,
   output wire [7:0]  seg,
   output wire [5:0]  seg_digit,
@@ -37,6 +43,7 @@ module soc #(
   wire        pll_locked;
   wire        trap;
   wire [31:0] pc;
+  wire        dbg_halted;
 
   // 核和译码器之间的总线.
   wire        mem_valid;
@@ -84,6 +91,10 @@ module soc #(
   ) cpu (
     .clk      (cpu_clk),
     .resetn   (cpu_rstn),
+    // 第一阶段 DMI 只做传输验证,还不把命令寄存器接到 hart 控制线上.
+    .dbg_halt_req(1'b0),
+    .dbg_resume_req(1'b0),
+    .dbg_halted(dbg_halted),
     .irq_pending(irq_pending),
     .trap     (trap),
     .mem_valid(mem_valid),
@@ -95,6 +106,39 @@ module soc #(
     .mem_rdata(mem_rdata),
     .retire   (),
     .pc       (pc)
+  );
+
+  wire [1:0]  dmi_req_toggle;
+  wire [1:0]  dmi_req_write;
+  wire [13:0] dmi_req_addr;
+  wire [63:0] dmi_req_wdata;
+  wire [1:0]  dmi_ack_toggle;
+  wire [63:0] dmi_rsp_rdata;
+  wire [1:0]  dmi_rsp_error;
+
+  assign cpu_trtck = cpu_ttck;
+
+  jtag_dtm_tap io_dtm (
+    .tck(cpu_ttck), .trst_n(cpu_trst_n), .tms(cpu_ttms), .tdi(cpu_ttdi),
+    .tdo(cpu_ttdo), .req_toggle(dmi_req_toggle[0]), .req_write(dmi_req_write[0]),
+    .req_addr(dmi_req_addr[6:0]), .req_wdata(dmi_req_wdata[31:0]),
+    .ack_toggle(dmi_ack_toggle[0]), .rsp_rdata(dmi_rsp_rdata[31:0]),
+    .rsp_error(dmi_rsp_error[0])
+  );
+
+  bscan_dtm xilinx_dtm (
+    .sim_resetn(cpu_rstn), .req_toggle(dmi_req_toggle[1]),
+    .req_write(dmi_req_write[1]), .req_addr(dmi_req_addr[13:7]),
+    .req_wdata(dmi_req_wdata[63:32]), .ack_toggle(dmi_ack_toggle[1]),
+    .rsp_rdata(dmi_rsp_rdata[63:32]), .rsp_error(dmi_rsp_error[1])
+  );
+
+  debug_dmi_regs dmi_regs (
+    .clk(cpu_clk), .resetn(cpu_rstn), .hart_pc(pc), .hart_halted(dbg_halted),
+    .req_toggle(dmi_req_toggle), .req_write(dmi_req_write),
+    .req_addr(dmi_req_addr), .req_wdata(dmi_req_wdata),
+    .ack_toggle(dmi_ack_toggle), .rsp_rdata(dmi_rsp_rdata),
+    .rsp_error(dmi_rsp_error)
   );
 
   bus_decode #(
@@ -224,6 +268,13 @@ module top #(
 ) (
   input  wire       clk,
   input  wire       rst_n,
+  input  wire       cpu_ttck,
+  input  wire       cpu_ttdi,
+  output wire       cpu_ttdo,
+  input  wire       cpu_ttms,
+  output wire       cpu_trtck,
+  input  wire       cpu_trst_n,
+  input  wire       cpu_tsrst_n,
   output wire [7:0] led,
   output wire [7:0] seg,
   output wire [5:0] seg_digit,
@@ -237,7 +288,13 @@ module top #(
     .MEM_WORDS (MEM_WORDS)
   ) impl (
     .clk       (clk),
-    .rst_n     (rst_n),
+    .rst_n     (rst_n && cpu_tsrst_n),
+    .cpu_ttck  (cpu_ttck),
+    .cpu_ttdi  (cpu_ttdi),
+    .cpu_ttdo  (cpu_ttdo),
+    .cpu_ttms  (cpu_ttms),
+    .cpu_trtck (cpu_trtck),
+    .cpu_trst_n(cpu_trst_n),
     .led       (led),
     .seg       (seg),
     .seg_digit (seg_digit),
@@ -266,6 +323,13 @@ module top_sram #(
 ) (
   input  wire        clk,
   input  wire        rst_n,
+  input  wire        cpu_ttck,
+  input  wire        cpu_ttdi,
+  output wire        cpu_ttdo,
+  input  wire        cpu_ttms,
+  output wire        cpu_trtck,
+  input  wire        cpu_trst_n,
+  input  wire        cpu_tsrst_n,
   output wire [7:0]  led,
   output wire [7:0]  seg,
   output wire [5:0]  seg_digit,
@@ -291,7 +355,13 @@ module top_sram #(
     .MEM_WORDS (MEM_WORDS)
   ) impl (
     .clk       (clk),
-    .rst_n     (rst_n),
+    .rst_n     (rst_n && cpu_tsrst_n),
+    .cpu_ttck  (cpu_ttck),
+    .cpu_ttdi  (cpu_ttdi),
+    .cpu_ttdo  (cpu_ttdo),
+    .cpu_ttms  (cpu_ttms),
+    .cpu_trtck (cpu_trtck),
+    .cpu_trst_n(cpu_trst_n),
     .led       (led),
     .seg       (seg),
     .seg_digit (seg_digit),

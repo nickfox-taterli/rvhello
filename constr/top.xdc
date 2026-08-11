@@ -61,3 +61,20 @@ set_property IOSTANDARD LVCMOS33 [get_ports {seg[7]}]
 # UART TX -> WCH USB 转串口 (L18), 115200-8N1. 只发不收, RX 引脚本工程不占.
 set_property PACKAGE_PIN L18 [get_ports uart_tx]
 set_property IOSTANDARD LVCMOS33 [get_ports uart_tx]
+
+# FTDI 端口 1 的独立 RISC-V JTAG. 端口 0 仍留给 Xilinx 配置 JTAG.
+set_property PACKAGE_PIN M21 [get_ports cpu_ttck]
+set_property PACKAGE_PIN L22 [get_ports cpu_ttdi]
+set_property PACKAGE_PIN L24 [get_ports cpu_ttdo]
+set_property PACKAGE_PIN L23 [get_ports cpu_ttms]
+set_property PACKAGE_PIN M25 [get_ports cpu_trtck]
+set_property PACKAGE_PIN M24 [get_ports cpu_trst_n]
+set_property PACKAGE_PIN L25 [get_ports cpu_tsrst_n]
+set_property IOSTANDARD LVCMOS33 [get_ports {cpu_ttck cpu_ttdi cpu_ttdo cpu_ttms cpu_trtck cpu_trst_n cpu_tsrst_n}]
+set_property PULLUP true [get_ports {cpu_ttck cpu_ttdi cpu_ttms cpu_trst_n cpu_tsrst_n}]
+set_property DRIVE 8 [get_ports {cpu_ttdo cpu_trtck}]
+set_property SLEW SLOW [get_ports {cpu_ttdo cpu_trtck}]
+
+# JTAG 自带异步时钟和 CDC,不让系统时钟分析跨域端口路径.
+set_false_path -from [get_ports {cpu_ttck cpu_ttdi cpu_ttms cpu_trst_n}]
+set_false_path -to [get_ports {cpu_ttdo cpu_trtck}]

@@ -1,6 +1,7 @@
 IVERILOG ?= iverilog
 VVP ?= vvp
 VIVADO ?= /home/taterli/tools/Xilinx/Vivado/2024.2/bin/vivado
+XSDB ?= /home/taterli/tools/Xilinx/Vivado/2024.2/bin/xsdb
 JOBS ?= 8
 
 # RISC-V 工具链: PATH 里有的话直接用, 没有就找本地 xpack 安装补进 PATH.
@@ -17,13 +18,33 @@ FW_FLAGS := -march=rv32im_zicsr -mabi=ilp32 -ffreestanding -nostdlib -nostartfil
 
 RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
        src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v \
-       src/board/clk_pll.v src/board/top.v src/board/seg_display.v src/periph/sram_async.v
+       src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/bscan_dtm.v \
+       src/debug/debug_dmi_regs.v src/board/clk_pll.v src/board/top.v \
+       src/board/seg_display.v src/periph/sram_async.v
 
-.PHONY: all sim sim-unit sim-m-disabled sim-timer sim-top sim-sram fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
+.PHONY: all sim sim-unit sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top sim-sram jtag-smoke bscan-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
 
 all: sim
 
-sim: sim-unit sim-m-disabled sim-timer sim-top
+sim: sim-unit sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top
+
+sim-debug-halt: build/debug_halt.vvp
+	$(VVP) build/debug_halt.vvp
+
+build/debug_halt.vvp: src/core/rv32i_core.v src/core/rv32m_pcpi.v sim/tb_debug_halt.v | build
+	$(IVERILOG) -g2012 -s tb_debug_halt -o $@ src/core/rv32i_core.v src/core/rv32m_pcpi.v sim/tb_debug_halt.v
+
+sim-jtag: build/jtag_dmi.vvp
+	$(VVP) build/jtag_dmi.vvp
+
+jtag-smoke:
+	python3 script/jtag_smoke.py
+
+bscan-smoke:
+	$(XSDB) script/bscan_smoke.tcl
+
+build/jtag_dmi.vvp: src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/debug_dmi_regs.v sim/tb_jtag_dmi.v | build
+	$(IVERILOG) -g2012 -s tb_jtag_dmi -o $@ src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/debug_dmi_regs.v sim/tb_jtag_dmi.v
 
 sim-unit: build/rv32i.vvp
 	$(VVP) build/rv32i.vvp

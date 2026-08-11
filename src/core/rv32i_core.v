@@ -17,6 +17,9 @@ module rv32i_core #(
 ) (
     input  wire        clk,
     input  wire        resetn,
+    input  wire        dbg_halt_req,
+    input  wire        dbg_resume_req,
+    output wire        dbg_halted,
     // irq_pending[n] 对应 mcause=n,方便后续直接扩展软件/定时器/外部 IRQ.
     input  wire [31:0] irq_pending,
     output reg         trap,
@@ -38,9 +41,14 @@ module rv32i_core #(
   localparam [2:0] S_MEM   = 3'd2;
   localparam [2:0] S_PCPI  = 3'd3;
   localparam [2:0] S_TRAP  = 3'd4;
+  localparam [2:0] S_HALT  = 3'd5;
 
   reg  [2:0]  state;
   reg  [31:0] ir;
+  reg         halt_pending;
+  reg         halt_resume_exec;
+
+  assign dbg_halted = state == S_HALT;
 
   // 机器模式中断实现标准 CSR,中断位号直接使用 mcause 编号.
   reg  [31:0] csr_mstatus;
@@ -429,28 +437,51 @@ module rv32i_core #(
       csr_mtvec    <= 32'd0;
       csr_mepc     <= 32'd0;
       csr_mcause   <= 32'd0;
+      halt_pending <= 1'b0;
+      halt_resume_exec <= 1'b0;
       // 不复位通用寄存器, x0 的读旁路始终返回零.
     end else begin
+      // halt 请求可能只保持一拍,先锁存下来,等当前总线或 PCPI 事务完成再停.
+      if (dbg_halt_req)
+        halt_pending <= 1'b1;
       case (state)
         S_FETCH: begin
-          // 中断只在指令边界采样. 已经预取的指令可以丢弃, mepc 指向尚未执行的 PC.
-          if (interrupt_enabled) begin
+          // 已经发出的取指不能撤销. ready 后可以带着取到的 IR 停住,恢复时再执行.
+          if (mem_valid && mem_ready) begin
+            mem_valid <= 1'b0;
+            ir        <= mem_rdata;
+            if (halt_pending || dbg_halt_req) begin
+              state            <= S_HALT;
+              halt_resume_exec <= 1'b1;
+              halt_pending     <= 1'b0;
+            end else if (interrupt_enabled) begin
+              csr_mepc           <= {pc[31:2], 2'b00};
+              csr_mcause         <= {1'b1, 26'd0, irq_cause};
+              csr_mstatus[7]     <= csr_mstatus[3];
+              csr_mstatus[3]     <= 1'b0;
+              csr_mstatus[12:11] <= 2'b11;
+              pc                 <= interrupt_pc;
+            end else begin
+              state <= S_EXEC;
+            end
+          end else if (mem_valid) begin
+            // 等待中的取指保持所有请求信号不变.
+          end else if (halt_pending || dbg_halt_req) begin
+            state            <= S_HALT;
+            halt_resume_exec <= 1'b0;
+            halt_pending     <= 1'b0;
+          end else if (interrupt_enabled) begin
             csr_mepc         <= {pc[31:2], 2'b00};
             csr_mcause       <= {1'b1, 26'd0, irq_cause};
             csr_mstatus[7]   <= csr_mstatus[3];
             csr_mstatus[3]   <= 1'b0;
             csr_mstatus[12:11] <= 2'b11;
             pc               <= interrupt_pc;
-            mem_valid        <= 1'b0;
-          end else if (!mem_valid) begin
+          end else begin
             mem_valid <= 1'b1;
             mem_instr <= 1'b1;
             mem_addr  <= pc;
             mem_wstrb <= 4'b0000;
-          end else if (mem_ready) begin
-            mem_valid <= 1'b0;
-            ir        <= mem_rdata;
-            state     <= S_EXEC;
           end
         end
 
@@ -505,11 +536,18 @@ module rv32i_core #(
             end
             pc     <= decoded_next_pc;
             retire <= 1'b1;
-            mem_valid <= 1'b1;
-            mem_instr <= 1'b1;
-            mem_addr  <= decoded_next_pc;
-            mem_wstrb <= 4'b0000;
-            state  <= S_FETCH;
+            if (halt_pending || dbg_halt_req) begin
+              mem_valid        <= 1'b0;
+              state            <= S_HALT;
+              halt_resume_exec <= 1'b0;
+              halt_pending     <= 1'b0;
+            end else begin
+              mem_valid <= 1'b1;
+              mem_instr <= 1'b1;
+              mem_addr  <= decoded_next_pc;
+              mem_wstrb <= 4'b0000;
+              state     <= S_FETCH;
+            end
           end
         end
 
@@ -528,11 +566,18 @@ module rv32i_core #(
             end
             pc     <= pc + 32'd4;
             retire <= 1'b1;
-            mem_valid <= 1'b1;
-            mem_instr <= 1'b1;
-            mem_addr  <= pc + 32'd4;
-            mem_wstrb <= 4'b0000;
-            state  <= S_FETCH;
+            if (halt_pending || dbg_halt_req) begin
+              mem_valid        <= 1'b0;
+              state            <= S_HALT;
+              halt_resume_exec <= 1'b0;
+              halt_pending     <= 1'b0;
+            end else begin
+              mem_valid <= 1'b1;
+              mem_instr <= 1'b1;
+              mem_addr  <= pc + 32'd4;
+              mem_wstrb <= 4'b0000;
+              state     <= S_FETCH;
+            end
           end
         end
 
@@ -543,11 +588,35 @@ module rv32i_core #(
               regs[rd] <= pcpi_rd;
             pc        <= pc + 32'd4;
             retire    <= 1'b1;
-            mem_valid <= 1'b1;
-            mem_instr <= 1'b1;
-            mem_addr  <= pc + 32'd4;
-            mem_wstrb <= 4'b0000;
-            state     <= S_FETCH;
+            if (halt_pending || dbg_halt_req) begin
+              mem_valid        <= 1'b0;
+              state            <= S_HALT;
+              halt_resume_exec <= 1'b0;
+              halt_pending     <= 1'b0;
+            end else begin
+              mem_valid <= 1'b1;
+              mem_instr <= 1'b1;
+              mem_addr  <= pc + 32'd4;
+              mem_wstrb <= 4'b0000;
+              state     <= S_FETCH;
+            end
+          end
+        end
+
+        S_HALT: begin
+          // 这里只冻结核状态,系统时钟和外设继续运行. resume 后从精确边界接着走.
+          mem_valid <= 1'b0;
+          if (dbg_resume_req && !dbg_halt_req) begin
+            halt_pending <= 1'b0;
+            if (halt_resume_exec) begin
+              state <= S_EXEC;
+            end else begin
+              mem_valid <= 1'b1;
+              mem_instr <= 1'b1;
+              mem_addr  <= pc;
+              mem_wstrb <= 4'b0000;
+              state     <= S_FETCH;
+            end
           end
         end
 

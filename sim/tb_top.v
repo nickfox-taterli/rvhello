@@ -14,6 +14,11 @@ module tb_top;
   wire [7:0] seg;
   wire [5:0] seg_digit;
   wire       uart_tx;
+  reg        cpu_ttck = 1'b0;
+  reg        cpu_ttdi = 1'b0;
+  reg        cpu_ttms = 1'b1;
+  wire       cpu_ttdo;
+  wire       cpu_trtck;
 
   always #5 clk = ~clk;
 
@@ -25,6 +30,13 @@ module tb_top;
   ) dut (
     .clk      (clk),
     .rst_n    (rst_n),
+    .cpu_ttck (cpu_ttck),
+    .cpu_ttdi (cpu_ttdi),
+    .cpu_ttdo (cpu_ttdo),
+    .cpu_ttms (cpu_ttms),
+    .cpu_trtck(cpu_trtck),
+    .cpu_trst_n(rst_n),
+    .cpu_tsrst_n(rst_n),
     .led      (led),
     .seg      (seg),
     .seg_digit(seg_digit),
