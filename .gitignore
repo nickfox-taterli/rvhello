@@ -31,3 +31,4 @@ reports/
 *.swo
 .DS_Store
 *.pyc
+.vscode/

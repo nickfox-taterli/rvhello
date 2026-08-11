@@ -19,6 +19,23 @@ RV32I 单核, 取指与访存共用一组 valid/ready 总线, 经地址译码器
 
 CPU 使用 32 位 IRQ pending 向量,位号直接对应 `mcause`; Timer pending 当前接到 bit 7(MTIP),后续可直接加入软件/外部/平台中断. 核实现 `mstatus`, `mie`, `mtvec`, `mepc`, `mcause`, `mip`, 标准 CSR 指令和 `MRET`; 固件通过中断每 0.5 s 翻转一次 LED, `main.c` 不再包含 MUL 自检.
 
+## 调试链路
+
+- FTDI 端口 0 继续用于 Xilinx 配置 JTAG;端口 1 通过独立 IO 接入 5 位 RISC-V JTAG TAP.
+- Xilinx JTAG 的 USER3/USER4 通过两个 `BSCANE2` 分别接入 DTMCS 和 DMI.
+- 两条链路汇入同一个 RISC-V Debug Module 0.13 后端,可由 OpenOCD 和 GDB 直接调试.
+- 核内 halt 接口会锁存短脉冲请求.取指,数据访存或 PCPI 已经开始时,必须等当前事务完成并退休到精确边界后才冻结 PC;resume 从该边界继续.
+- DM 支持 halt/resume/ndmreset,abstract register 和 8/16/32 位 SBA.当前单 hart 实现不带 program buffer,系统总线访问要求 hart 已停止.
+- abstract register 可读写 32 个 GPR,dpc,dcsr,mstatus,misa,mie,mtvec,mepc,mcause,mip 和 hart ID CSR;dcsr.step 用于硬件单步,EBREAK 会进入 Debug Mode.
+
+| DMI 地址 | 寄存器 |
+|---|---|
+| 0x04 | DATA0 |
+| 0x10 - 0x12 | DMCONTROL / DMSTATUS / HARTINFO |
+| 0x16 - 0x18 | ABSTRACTCS / COMMAND / ABSTRACTAUTO |
+| 0x38 - 0x3c | SBCS / SBADDRESS0 / SBDATA0 |
+| 0x40 | HALTSUM0 |
+
 ## 自定义指令 GPO.WR
 
 `GPO.WR rs1` (custom-0, opcode 0x0b) 
@@ -40,7 +57,19 @@ make sim          # iverilog 单元 + 顶层行为仿真
 make fw           # riscv 工具链编译固件, 刷新 src/program.hex
 make bitstream    # Vivado 综合并实现, 生成 bitstream
 make program      # 下载到 FPGA
+make jtag-smoke   # 从 FTDI 端口 1 检查 halt,abstract register 和 resume
+make bscan-smoke  # 从 FTDI 端口 0 检查 BSCANE2 USER3/USER4 和标准 DM
+make openocd-probe # OpenOCD 枚举 hart 并读取 PC/GPR
+make openocd-load # 通过 OpenOCD 把 build/firmware.elf 写入 BRAM,校验后从 0 运行
+# 另一个终端保持 OpenOCD 运行后执行:
+make gdb-smoke    # GDB 检查寄存器,断点,单步和内存读写
 make clean
 ```
 
 `make fw` 需要 riscv 工具链 (PATH 里的 `riscv-none-elf-` 或 `riscv32-unknown-elf-`, 否则回落到 `~/.local/xpack/...`).
+固件默认使用 `-Og -g3 -gdwarf-4`,便于 GDB 按源码单步.需要尺寸优化时可执行
+`make FW_OPT=-Os fw`.
+
+VS Code 中选择 `RVHello: Cortex-Debug 下载并调试` 后按 F5.配置会编译 ELF,启动 OpenOCD,
+通过 SBA 把 ELF 写入 BRAM,然后运行到 `main`.只下载不进入调试器时,运行任务
+`RVHello: OpenOCD 下载 ELF`.

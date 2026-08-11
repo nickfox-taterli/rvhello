@@ -46,23 +46,43 @@ if {($dtmcs & 0xf) != 1 || (($dtmcs >> 4) & 0x3f) != 7} {
     error [format "Unexpected USER3 DTMCS: 0x%08x" $dtmcs]
 }
 
-set response [dmi_access 0x70 0 1]
+set response [dmi_access 0x10 1 2]
+clear_dmi_error
+
+set response [dmi_access 0x11 0 1]
 set op [expr {$response & 3}]
-set ident [expr {($response >> 2) & 0xffffffff}]
-if {$op != 0 || $ident != 0x52564831} {
-    error [format "Unexpected USER4 DMI ID: op=%d data=0x%08x" $op $ident]
+set dmstatus [expr {($response >> 2) & 0xffffffff}]
+if {$op != 0 || ($dmstatus & 0xf) != 2 || ($dmstatus & 0x80) == 0} {
+    error [format "Unexpected USER4 DMSTATUS: op=%d data=0x%08x" $op $dmstatus]
 }
 clear_dmi_error
 
-set response [dmi_access 0x71 0x13579bdf 2]
+set response [dmi_access 0x10 0x80000001 2]
 clear_dmi_error
-set response [dmi_access 0x71 0 1]
+after 10
+set response [dmi_access 0x11 0 1]
 set op [expr {$response & 3}]
-set scratch [expr {($response >> 2) & 0xffffffff}]
-if {$op != 0 || $scratch != 0x13579bdf} {
-    error [format "USER4 scratch mismatch: op=%d data=0x%08x" $op $scratch]
+set halted_status [expr {($response >> 2) & 0xffffffff}]
+if {$op != 0 || ($halted_status & 0x100) == 0} {
+    error [format "USER4 halt failed: op=%d data=0x%08x" $op $halted_status]
 }
+clear_dmi_error
+
+# Access Register: 32 位,transfer=1,读取 dpc.
+set response [dmi_access 0x17 0x002207b1 2]
+clear_dmi_error
+after 10
+set response [dmi_access 0x04 0 1]
+set op [expr {$response & 3}]
+set dpc [expr {($response >> 2) & 0xffffffff}]
+if {$op != 0} {
+    error [format "USER4 abstract DPC read failed: op=%d" $op]
+}
+clear_dmi_error
+
+set response [dmi_access 0x10 0x40000001 2]
+clear_dmi_error
 
 puts [format "USER3_DTMCS=0x%08x" $dtmcs]
-puts [format "USER4_DMI_ID=0x%08x SCRATCH=0x%08x" $ident $scratch]
+puts [format "USER4_DMSTATUS=0x%08x DPC=0x%08x" $halted_status $dpc]
 puts "BSCAN_SMOKE_OK"

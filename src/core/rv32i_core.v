@@ -20,6 +20,13 @@ module rv32i_core #(
     input  wire        dbg_halt_req,
     input  wire        dbg_resume_req,
     output wire        dbg_halted,
+    input  wire        dbg_reg_valid,
+    input  wire        dbg_reg_write,
+    input  wire [15:0] dbg_reg_addr,
+    input  wire [31:0] dbg_reg_wdata,
+    output reg  [31:0] dbg_reg_rdata,
+    output reg         dbg_reg_ready,
+    output reg         dbg_reg_error,
     // irq_pending[n] 对应 mcause=n,方便后续直接扩展软件/定时器/外部 IRQ.
     input  wire [31:0] irq_pending,
     output reg         trap,
@@ -47,6 +54,8 @@ module rv32i_core #(
   reg  [31:0] ir;
   reg         halt_pending;
   reg         halt_resume_exec;
+  reg         step_active;
+  reg  [31:0] csr_dcsr;
 
   assign dbg_halted = state == S_HALT;
 
@@ -117,6 +126,7 @@ module rv32i_core #(
   reg        decoded_start_pcpi;
   reg        decoded_csr_write;
   reg        decoded_mret;
+  reg        decoded_ebreak;
   reg [31:0] decoded_result;
   reg [31:0] decoded_next_pc;
   reg [31:0] decoded_address;
@@ -153,6 +163,7 @@ module rv32i_core #(
     decoded_start_pcpi   = 1'b0;
     decoded_csr_write    = 1'b0;
     decoded_mret         = 1'b0;
+    decoded_ebreak       = 1'b0;
     decoded_result       = 32'd0;
     decoded_next_pc      = pc + 32'd4;
     decoded_address      = 32'd0;
@@ -319,6 +330,8 @@ module rv32i_core #(
           // MRET 恢复中断前 PC; WFI 在这个小核里允许当 NOP 使用.
           if ((ir[31:20] == 12'h302) && (rs1 == 5'd0) && (rd == 5'd0)) begin
             decoded_mret = 1'b1;
+          end else if ((ir[31:20] == 12'h001) && (rs1 == 5'd0) && (rd == 5'd0)) begin
+            decoded_ebreak = 1'b1;
           end else if ((ir[31:20] == 12'h105) && (rs1 == 5'd0) && (rd == 5'd0)) begin
             decoded_next_pc = pc + 32'd4;
           end else begin
@@ -439,8 +452,15 @@ module rv32i_core #(
       csr_mcause   <= 32'd0;
       halt_pending <= 1'b0;
       halt_resume_exec <= 1'b0;
+      step_active  <= 1'b0;
+      csr_dcsr     <= 32'h4000_0003;
+      dbg_reg_rdata <= 32'd0;
+      dbg_reg_ready <= 1'b0;
+      dbg_reg_error <= 1'b0;
       // 不复位通用寄存器, x0 的读旁路始终返回零.
     end else begin
+      dbg_reg_ready <= 1'b0;
+      dbg_reg_error <= 1'b0;
       // halt 请求可能只保持一拍,先锁存下来,等当前总线或 PCPI 事务完成再停.
       if (dbg_halt_req)
         halt_pending <= 1'b1;
@@ -454,6 +474,7 @@ module rv32i_core #(
               state            <= S_HALT;
               halt_resume_exec <= 1'b1;
               halt_pending     <= 1'b0;
+              csr_dcsr[8:6]    <= 3'd3;
             end else if (interrupt_enabled) begin
               csr_mepc           <= {pc[31:2], 2'b00};
               csr_mcause         <= {1'b1, 26'd0, irq_cause};
@@ -470,6 +491,7 @@ module rv32i_core #(
             state            <= S_HALT;
             halt_resume_exec <= 1'b0;
             halt_pending     <= 1'b0;
+            csr_dcsr[8:6]    <= 3'd3;
           end else if (interrupt_enabled) begin
             csr_mepc         <= {pc[31:2], 2'b00};
             csr_mcause       <= {1'b1, 26'd0, irq_cause};
@@ -500,11 +522,29 @@ module rv32i_core #(
             csr_mstatus[7]     <= 1'b1;
             csr_mstatus[12:11] <= 2'b00;
             retire             <= 1'b1;
-            mem_valid          <= 1'b1;
-            mem_instr          <= 1'b1;
-            mem_addr           <= csr_mepc;
-            mem_wstrb          <= 4'b0000;
-            state              <= S_FETCH;
+            if (halt_pending || dbg_halt_req || step_active) begin
+              mem_valid        <= 1'b0;
+              state            <= S_HALT;
+              halt_resume_exec <= 1'b0;
+              halt_pending     <= 1'b0;
+              step_active      <= 1'b0;
+              csr_dcsr[8:6]    <= step_active ? 3'd4 : 3'd3;
+            end else begin
+              mem_valid <= 1'b1;
+              mem_instr <= 1'b1;
+              mem_addr  <= csr_mepc;
+              mem_wstrb <= 4'b0000;
+              state     <= S_FETCH;
+            end
+          end else if (decoded_ebreak) begin
+            // EBREAK 在调试功能启用后进入 halt,PC 留在断点指令上供调试器检查.
+            mem_valid        <= 1'b0;
+            state            <= S_HALT;
+            // 调试器可能在 resume 前把软件断点恢复成原指令,所以必须重新取指.
+            halt_resume_exec <= 1'b0;
+            halt_pending     <= 1'b0;
+            step_active      <= 1'b0;
+            csr_dcsr[8:6]    <= 3'd1;
           end else if (decoded_start_mem) begin
             // 一次性锁存完整访存请求; S_MEM 无论等待多久都不会重新译码.
             mem_valid    <= 1'b1;
@@ -536,11 +576,13 @@ module rv32i_core #(
             end
             pc     <= decoded_next_pc;
             retire <= 1'b1;
-            if (halt_pending || dbg_halt_req) begin
+            if (halt_pending || dbg_halt_req || step_active) begin
               mem_valid        <= 1'b0;
               state            <= S_HALT;
               halt_resume_exec <= 1'b0;
               halt_pending     <= 1'b0;
+              step_active      <= 1'b0;
+              csr_dcsr[8:6]    <= step_active ? 3'd4 : 3'd3;
             end else begin
               mem_valid <= 1'b1;
               mem_instr <= 1'b1;
@@ -566,11 +608,13 @@ module rv32i_core #(
             end
             pc     <= pc + 32'd4;
             retire <= 1'b1;
-            if (halt_pending || dbg_halt_req) begin
+            if (halt_pending || dbg_halt_req || step_active) begin
               mem_valid        <= 1'b0;
               state            <= S_HALT;
               halt_resume_exec <= 1'b0;
               halt_pending     <= 1'b0;
+              step_active      <= 1'b0;
+              csr_dcsr[8:6]    <= step_active ? 3'd4 : 3'd3;
             end else begin
               mem_valid <= 1'b1;
               mem_instr <= 1'b1;
@@ -588,11 +632,13 @@ module rv32i_core #(
               regs[rd] <= pcpi_rd;
             pc        <= pc + 32'd4;
             retire    <= 1'b1;
-            if (halt_pending || dbg_halt_req) begin
+            if (halt_pending || dbg_halt_req || step_active) begin
               mem_valid        <= 1'b0;
               state            <= S_HALT;
               halt_resume_exec <= 1'b0;
               halt_pending     <= 1'b0;
+              step_active      <= 1'b0;
+              csr_dcsr[8:6]    <= step_active ? 3'd4 : 3'd3;
             end else begin
               mem_valid <= 1'b1;
               mem_instr <= 1'b1;
@@ -606,8 +652,44 @@ module rv32i_core #(
         S_HALT: begin
           // 这里只冻结核状态,系统时钟和外设继续运行. resume 后从精确边界接着走.
           mem_valid <= 1'b0;
-          if (dbg_resume_req && !dbg_halt_req) begin
+          if (dbg_reg_valid) begin
+            dbg_reg_ready <= 1'b1;
+            if (dbg_reg_addr[15:5] == 11'h080) begin
+              dbg_reg_rdata <= dbg_reg_addr[4:0] == 5'd0 ? 32'd0 : regs[dbg_reg_addr[4:0]];
+              if (dbg_reg_write && dbg_reg_addr[4:0] != 5'd0)
+                regs[dbg_reg_addr[4:0]] <= dbg_reg_wdata;
+            end else begin
+              case (dbg_reg_addr)
+                16'h0300: begin dbg_reg_rdata <= csr_mstatus; if (dbg_reg_write) csr_mstatus <= dbg_reg_wdata & 32'h0000_1888; end
+                16'h0301: begin dbg_reg_rdata <= ENABLE_M_PCPI ? 32'h4000_1100 : 32'h4000_0100; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
+                16'h0304: begin dbg_reg_rdata <= csr_mie;     if (dbg_reg_write) csr_mie <= dbg_reg_wdata; end
+                16'h0305: begin dbg_reg_rdata <= csr_mtvec;   if (dbg_reg_write) csr_mtvec <= {dbg_reg_wdata[31:2], 2'b00}; end
+                16'h0341: begin dbg_reg_rdata <= csr_mepc;    if (dbg_reg_write) csr_mepc <= {dbg_reg_wdata[31:2], 2'b00}; end
+                16'h0342: begin dbg_reg_rdata <= csr_mcause;  if (dbg_reg_write) csr_mcause <= dbg_reg_wdata; end
+                16'h0344: begin dbg_reg_rdata <= irq_pending; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
+                16'h07b0: begin
+                  dbg_reg_rdata <= csr_dcsr;
+                  if (dbg_reg_write)
+                    csr_dcsr <= {4'd4, 17'd0, csr_dcsr[10:6], 3'd0, dbg_reg_wdata[2], 2'b11};
+                end
+                16'h07b1: begin
+                  dbg_reg_rdata <= pc;
+                  if (dbg_reg_write) begin
+                    pc <= {dbg_reg_wdata[31:1], 1'b0};
+                    // DPC 被调试器改写后,之前预取的 IR 已经不再对应这个 PC.
+                    halt_resume_exec <= 1'b0;
+                  end
+                end
+                16'h0f11,
+                16'h0f12,
+                16'h0f13,
+                16'h0f14: begin dbg_reg_rdata <= 32'd0; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
+                default: begin dbg_reg_rdata <= 32'd0; dbg_reg_error <= 1'b1; end
+              endcase
+            end
+          end else if (dbg_resume_req && !dbg_halt_req) begin
             halt_pending <= 1'b0;
+            step_active <= csr_dcsr[2];
             if (halt_resume_exec) begin
               state <= S_EXEC;
             end else begin

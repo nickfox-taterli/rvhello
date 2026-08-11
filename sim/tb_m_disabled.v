@@ -22,6 +22,8 @@ module tb_m_disabled;
       .dbg_halt_req(1'b0),
       .dbg_resume_req(1'b0),
       .dbg_halted(),
+      .dbg_reg_valid(1'b0), .dbg_reg_write(1'b0), .dbg_reg_addr(16'd0),
+      .dbg_reg_wdata(32'd0), .dbg_reg_rdata(), .dbg_reg_ready(), .dbg_reg_error(),
       .irq_pending(32'd0),
       .trap     (trap),
       .mem_valid(mem_valid),

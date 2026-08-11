@@ -2,6 +2,8 @@ IVERILOG ?= iverilog
 VVP ?= vvp
 VIVADO ?= /home/taterli/tools/Xilinx/Vivado/2024.2/bin/vivado
 XSDB ?= /home/taterli/tools/Xilinx/Vivado/2024.2/bin/xsdb
+OPENOCD ?= openocd
+GDB ?= gdb-multiarch
 JOBS ?= 8
 
 # RISC-V 工具链: PATH 里有的话直接用, 没有就找本地 xpack 安装补进 PATH.
@@ -14,15 +16,17 @@ endif
 RISCV_GCC     := $(RISCV_PREFIX)gcc
 RISCV_OBJCOPY := $(RISCV_PREFIX)objcopy
 RISCV_OBJDUMP := $(RISCV_PREFIX)objdump
-FW_FLAGS := -march=rv32im_zicsr -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles -Os -T fw/link.ld
+FW_OPT ?= -Og
+FW_FLAGS := -march=rv32im_zicsr -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles \
+            $(FW_OPT) -g3 -gdwarf-4 -fno-omit-frame-pointer -T fw/link.ld
 
 RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
        src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v \
        src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/bscan_dtm.v \
-       src/debug/debug_dmi_regs.v src/board/clk_pll.v src/board/top.v \
+       src/debug/riscv_debug_dm.v src/board/clk_pll.v src/board/top.v \
        src/board/seg_display.v src/periph/sram_async.v
 
-.PHONY: all sim sim-unit sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top sim-sram jtag-smoke bscan-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
+.PHONY: all sim sim-unit sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top sim-sram jtag-smoke bscan-smoke openocd-probe openocd-load gdb-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
 
 all: sim
 
@@ -43,8 +47,19 @@ jtag-smoke:
 bscan-smoke:
 	$(XSDB) script/bscan_smoke.tcl
 
-build/jtag_dmi.vvp: src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/debug_dmi_regs.v sim/tb_jtag_dmi.v | build
-	$(IVERILOG) -g2012 -s tb_jtag_dmi -o $@ src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/debug_dmi_regs.v sim/tb_jtag_dmi.v
+openocd-probe:
+	$(OPENOCD) -f openocd-rvhello-ft2232h-b.cfg -c "halt" -c "reg pc" -c "reg t0" -c "resume" -c shutdown
+
+openocd-load: build/firmware.elf
+	$(OPENOCD) -f openocd-rvhello-ft2232h-b.cfg -c "reset halt" \
+		-c "load_image build/firmware.elf" -c "verify_image build/firmware.elf" \
+		-c "resume 0" -c shutdown
+
+gdb-smoke:
+	$(GDB) -q -batch -x script/gdb_debug_smoke.gdb
+
+build/jtag_dmi.vvp: src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/riscv_debug_dm.v sim/tb_jtag_dmi.v | build
+	$(IVERILOG) -g2012 -s tb_jtag_dmi -o $@ src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/riscv_debug_dm.v sim/tb_jtag_dmi.v
 
 sim-unit: build/rv32i.vvp
 	$(VVP) build/rv32i.vvp
@@ -85,7 +100,7 @@ fw: build/firmware.bin script/elf2hex.py
 	python3 script/elf2hex.py build/firmware.bin > src/program.hex
 	@echo "已刷新 src/program.hex"
 
-build/firmware.elf: fw/start.S fw/main.c fw/link.ld | build
+build/firmware.elf: fw/start.S fw/main.c fw/link.ld Makefile | build
 	$(RISCV_GCC) $(FW_FLAGS) fw/start.S fw/main.c -o $@
 	$(RISCV_OBJDUMP) -dr $@ > build/firmware.lst
 

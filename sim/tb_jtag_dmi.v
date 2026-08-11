@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// 独立 IO TAP 冒烟测试: 读 DTMCS,再通过 DMI 读 ID 并回读 scratch.
+// 独立 IO TAP 冒烟测试: 读 DTMCS/DMSTATUS,再执行 abstract register 命令.
 module tb_jtag_dmi;
   reg clk = 1'b0;
   reg tck = 1'b0;
@@ -15,6 +15,10 @@ module tb_jtag_dmi;
   wire [1:0] ack_bus;
   wire [63:0] rdata_bus;
   wire [1:0] error_bus;
+  wire hart_reg_valid;
+  wire hart_reg_write;
+  wire [15:0] hart_reg_addr;
+  wire [31:0] hart_reg_wdata;
   reg [40:0] scan_out;
   integer i;
 
@@ -27,11 +31,17 @@ module tb_jtag_dmi;
     .rsp_error(error_bus[0])
   );
 
-  debug_dmi_regs regs (
-    .clk(clk), .resetn(trst_n), .hart_pc(32'h1234_5678), .hart_halted(1'b0),
+  riscv_debug_dm regs (
+    .clk(clk), .resetn(trst_n),
     .req_toggle({1'b0, req_toggle}), .req_write({1'b0, req_write}),
     .req_addr({7'd0, req_addr}), .req_wdata({32'd0, req_wdata}),
-    .ack_toggle(ack_bus), .rsp_rdata(rdata_bus), .rsp_error(error_bus)
+    .ack_toggle(ack_bus), .rsp_rdata(rdata_bus), .rsp_error(error_bus),
+    .hart_halt_req(), .hart_resume_req(), .hart_halted(1'b1), .ndmreset(),
+    .hart_reg_valid(hart_reg_valid), .hart_reg_write(hart_reg_write),
+    .hart_reg_addr(hart_reg_addr), .hart_reg_wdata(hart_reg_wdata),
+    .hart_reg_rdata(32'ha5a5_5a5a), .hart_reg_ready(hart_reg_valid),
+    .hart_reg_error(1'b0), .sb_valid(), .sb_addr(), .sb_wdata(), .sb_wstrb(),
+    .sb_ready(1'b0), .sb_rdata(32'd0)
   );
 
   task jtag_clock(input reg next_tms, input reg next_tdi);
@@ -96,20 +106,21 @@ module tb_jtag_dmi;
       $fatal(1, "DTMCS 错误: %08x", scan_out[31:0]);
 
     set_ir(5'h11);
-    dmi_access(7'h70, 32'd0, 2'd1);
-    if (scan_out[1:0] !== 2'd0 || scan_out[33:2] !== 32'h5256_4831)
-      $fatal(1, "DMI ID 读取错误: %010x", scan_out);
+    dmi_access(7'h10, 32'h0000_0001, 2'd2);
+    dmi_access(7'h11, 32'd0, 2'd1);
+    if (scan_out[1:0] !== 2'd0 || scan_out[5:2] !== 4'd2 ||
+        !scan_out[9] || !scan_out[10])
+      $fatal(1, "DMSTATUS 错误: %010x", scan_out);
 
-    dmi_access(7'h71, 32'h89ab_cdef, 2'd2);
-    dmi_access(7'h71, 32'd0, 2'd1);
-    if (scan_out[1:0] !== 2'd0 || scan_out[33:2] !== 32'h89ab_cdef)
-      $fatal(1, "DMI scratch 回读错误: %010x", scan_out);
+    dmi_access(7'h17, 32'h0022_1005, 2'd2);
+    repeat (8) jtag_clock(1'b0, 1'b0);
+    dmi_access(7'h04, 32'd0, 2'd1);
+    if (scan_out[1:0] !== 2'd0 || scan_out[33:2] !== 32'ha5a5_5a5a)
+      $fatal(1, "abstract GPR 读取错误: %010x", scan_out);
+    if (hart_reg_addr !== 16'h1005 || hart_reg_write)
+      $fatal(1, "abstract 命令字段错误");
 
-    dmi_access(7'h72, 32'd0, 2'd1);
-    if (scan_out[33:2] !== 32'h1234_5678)
-      $fatal(1, "DMI PC 观察寄存器错误: %010x", scan_out);
-
-    $display("JTAG DMI PASS: DTMCS,ID,scratch,PC");
+    $display("JTAG DMI PASS: DTMCS,DMSTATUS,abstract GPR");
     $finish;
   end
 

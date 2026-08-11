@@ -44,6 +44,17 @@ module soc #(
   wire        trap;
   wire [31:0] pc;
   wire        dbg_halted;
+  wire        dbg_halt_req;
+  wire        dbg_resume_req;
+  wire        dbg_reg_valid;
+  wire        dbg_reg_write;
+  wire [15:0] dbg_reg_addr;
+  wire [31:0] dbg_reg_wdata;
+  wire [31:0] dbg_reg_rdata;
+  wire        dbg_reg_ready;
+  wire        dbg_reg_error;
+  wire        dm_ndmreset;
+  wire        hart_resetn = cpu_rstn && !dm_ndmreset;
 
   // 核和译码器之间的总线.
   wire        mem_valid;
@@ -53,6 +64,30 @@ module soc #(
   wire [31:0] mem_wdata;
   wire [31:0] mem_rdata;
   wire [3:0]  mem_wstrb;
+  wire        cpu_mem_valid;
+  wire        cpu_mem_instr;
+  wire        cpu_mem_ready;
+  wire [31:0] cpu_mem_addr;
+  wire [31:0] cpu_mem_wdata;
+  wire [31:0] cpu_mem_rdata;
+  wire [3:0]  cpu_mem_wstrb;
+  wire        dbg_mem_valid;
+  wire        dbg_mem_ready;
+  wire [31:0] dbg_mem_addr;
+  wire [31:0] dbg_mem_wdata;
+  wire [31:0] dbg_mem_rdata;
+  wire [3:0]  dbg_mem_wstrb;
+  wire        debug_bus_sel = dbg_halted && dbg_mem_valid;
+
+  assign mem_valid = debug_bus_sel ? dbg_mem_valid : cpu_mem_valid;
+  assign mem_instr = debug_bus_sel ? 1'b0 : cpu_mem_instr;
+  assign mem_addr  = debug_bus_sel ? dbg_mem_addr : cpu_mem_addr;
+  assign mem_wdata = debug_bus_sel ? dbg_mem_wdata : cpu_mem_wdata;
+  assign mem_wstrb = debug_bus_sel ? dbg_mem_wstrb : cpu_mem_wstrb;
+  assign cpu_mem_ready = !debug_bus_sel && mem_ready;
+  assign cpu_mem_rdata = mem_rdata;
+  assign dbg_mem_ready = debug_bus_sel && mem_ready;
+  assign dbg_mem_rdata = mem_rdata;
 
   // 各从端独立的 valid/ready/rdata, 由译码器按地址分发.
   wire        bram_valid;
@@ -90,20 +125,26 @@ module soc #(
     .RESET_PC(32'h0000_0000)
   ) cpu (
     .clk      (cpu_clk),
-    .resetn   (cpu_rstn),
-    // 第一阶段 DMI 只做传输验证,还不把命令寄存器接到 hart 控制线上.
-    .dbg_halt_req(1'b0),
-    .dbg_resume_req(1'b0),
+    .resetn   (hart_resetn),
+    .dbg_halt_req(dbg_halt_req),
+    .dbg_resume_req(dbg_resume_req),
     .dbg_halted(dbg_halted),
+    .dbg_reg_valid(dbg_reg_valid),
+    .dbg_reg_write(dbg_reg_write),
+    .dbg_reg_addr(dbg_reg_addr),
+    .dbg_reg_wdata(dbg_reg_wdata),
+    .dbg_reg_rdata(dbg_reg_rdata),
+    .dbg_reg_ready(dbg_reg_ready),
+    .dbg_reg_error(dbg_reg_error),
     .irq_pending(irq_pending),
     .trap     (trap),
-    .mem_valid(mem_valid),
-    .mem_instr(mem_instr),
-    .mem_ready(mem_ready),
-    .mem_addr (mem_addr),
-    .mem_wdata(mem_wdata),
-    .mem_wstrb(mem_wstrb),
-    .mem_rdata(mem_rdata),
+    .mem_valid(cpu_mem_valid),
+    .mem_instr(cpu_mem_instr),
+    .mem_ready(cpu_mem_ready),
+    .mem_addr (cpu_mem_addr),
+    .mem_wdata(cpu_mem_wdata),
+    .mem_wstrb(cpu_mem_wstrb),
+    .mem_rdata(cpu_mem_rdata),
     .retire   (),
     .pc       (pc)
   );
@@ -133,12 +174,21 @@ module soc #(
     .rsp_rdata(dmi_rsp_rdata[63:32]), .rsp_error(dmi_rsp_error[1])
   );
 
-  debug_dmi_regs dmi_regs (
-    .clk(cpu_clk), .resetn(cpu_rstn), .hart_pc(pc), .hart_halted(dbg_halted),
+  riscv_debug_dm dmi_regs (
+    .clk(cpu_clk), .resetn(cpu_rstn),
     .req_toggle(dmi_req_toggle), .req_write(dmi_req_write),
     .req_addr(dmi_req_addr), .req_wdata(dmi_req_wdata),
     .ack_toggle(dmi_ack_toggle), .rsp_rdata(dmi_rsp_rdata),
-    .rsp_error(dmi_rsp_error)
+    .rsp_error(dmi_rsp_error),
+    .hart_halt_req(dbg_halt_req), .hart_resume_req(dbg_resume_req),
+    .hart_halted(dbg_halted), .ndmreset(dm_ndmreset),
+    .hart_reg_valid(dbg_reg_valid), .hart_reg_write(dbg_reg_write),
+    .hart_reg_addr(dbg_reg_addr), .hart_reg_wdata(dbg_reg_wdata),
+    .hart_reg_rdata(dbg_reg_rdata), .hart_reg_ready(dbg_reg_ready),
+    .hart_reg_error(dbg_reg_error),
+    .sb_valid(dbg_mem_valid), .sb_addr(dbg_mem_addr),
+    .sb_wdata(dbg_mem_wdata), .sb_wstrb(dbg_mem_wstrb),
+    .sb_ready(dbg_mem_ready), .sb_rdata(dbg_mem_rdata)
   );
 
   bus_decode #(
