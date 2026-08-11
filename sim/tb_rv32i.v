@@ -32,10 +32,10 @@ module tb_rv32i;
       .pc       (pc)
   );
 
-  // 复用 prog_mem 做总线存储, 与顶层一致.
+  // 核单元测试: prog_mem 直连核, 不过译码器, 跑 sim/program_core.hex 的 ECALL trap 程序.
   prog_mem #(
       .WORDS  (1024),
-      .MEMFILE("src/program.hex")
+      .MEMFILE("sim/program_core.hex")
   ) mem (
       .clk       (clk),
       .mem_valid (mem_valid),

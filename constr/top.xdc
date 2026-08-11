@@ -57,3 +57,7 @@ set_property PACKAGE_PIN P23 [get_ports {seg[6]}]
 set_property IOSTANDARD LVCMOS33 [get_ports {seg[6]}]
 set_property PACKAGE_PIN P24 [get_ports {seg[7]}]
 set_property IOSTANDARD LVCMOS33 [get_ports {seg[7]}]
+
+# UART TX -> CP2102 USB 转串口 (L18), 115200-8N1. 只发不收, RX 引脚本工程不占.
+set_property PACKAGE_PIN L18 [get_ports uart_tx]
+set_property IOSTANDARD LVCMOS33 [get_ports uart_tx]

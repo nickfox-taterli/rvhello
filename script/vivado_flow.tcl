@@ -16,7 +16,7 @@ proc ensure_project {} {
         }
     }
     set_property target_language Verilog [current_project]
-    foreach path {src/prog_mem.v src/seg_display.v src/rv32i_core.v src/top.v} {
+    foreach path {src/core/rv32i_core.v src/core/prog_mem.v src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v src/board/top.v src/board/seg_display.v} {
         if {![file exists $path]} { error "Missing file: $path" }
         if {[llength [get_files -quiet $path]] == 0} { add_files -norecurse $path }
     }

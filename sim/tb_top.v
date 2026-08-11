@@ -1,108 +1,115 @@
 `timescale 1ns / 1ps
 
-// 顶层仿真: trap 后 LED 全亮, 数码管扫描出当前阶段程序的 trap PC.
-// TRAP_PC 每个阶段按程序长度改一处即可; 段码期望由 PC 的 6 个半字节经 hex7seg
-// 计算得到, 并考虑本板 seg_digit[0] 为最左位 (DIGIT0_IS_LSB=0) 的位序反转.
+// SoC 顶层仿真: 跑 fw/main.c 固件, 验收两件事:
+//   1) UART 串口线 uart_tx 上还原出 'O','K','\n' 三个字节;
+//   2) main 第一条 GPIO=1 真的落到总线 (抓写握手).
+// 仿真把 UART_BAUD 提到 CLOCK_HZ/20 (每 bit 20 拍), 加速发送, 否则要等上万时钟.
 module tb_top;
-  localparam integer CLOCK_HZ   = 50_000_000;
-  localparam integer REFRESH_HZ = 8_000_000;
-  localparam [31:0]  TRAP_PC    = 32'h0000_0020;
+  localparam integer CLOCK_HZ     = 50_000_000;
+  localparam integer REFRESH_HZ   = 8_000_000;
+  localparam integer UART_BAUD    = CLOCK_HZ / 20;                                  // 仿真加速
+  localparam integer CLKS_PER_BIT = (CLOCK_HZ + UART_BAUD/2) / UART_BAUD;           // = 20
+  localparam integer CB           = CLKS_PER_BIT;
 
   reg        clk   = 0;
   reg        rst_n = 0;
   wire [7:0] led;
   wire [7:0] seg;
   wire [5:0] seg_digit;
+  wire       uart_tx;
 
   always #5 clk = ~clk;
 
   top #(
-      .CLOCK_HZ  (CLOCK_HZ),
-      .REFRESH_HZ(REFRESH_HZ),
-      .MEMFILE   ("src/program.hex")
+    .CLOCK_HZ  (CLOCK_HZ),
+    .REFRESH_HZ(REFRESH_HZ),
+    .UART_BAUD (UART_BAUD),
+    .MEMFILE   ("src/program.hex")
   ) dut (
-      .clk      (clk),
-      .rst_n    (rst_n),
-      .led      (led),
-      .seg      (seg),
-      .seg_digit(seg_digit)
+    .clk      (clk),
+    .rst_n    (rst_n),
+    .led      (led),
+    .seg      (seg),
+    .seg_digit(seg_digit),
+    .uart_tx  (uart_tx)
   );
 
-  // 段码参考译码 (共阳极低电平点亮), 与 seg_display 内的表保持一致.
-  function [7:0] hex7seg;
-    input [3:0] n;
-    begin
-      case (n)
-        4'h0: hex7seg = 8'hC0;
-        4'h1: hex7seg = 8'hF9;
-        4'h2: hex7seg = 8'hA4;
-        4'h3: hex7seg = 8'hB0;
-        4'h4: hex7seg = 8'h99;
-        4'h5: hex7seg = 8'h92;
-        4'h6: hex7seg = 8'h82;
-        4'h7: hex7seg = 8'hF8;
-        4'h8: hex7seg = 8'h80;
-        4'h9: hex7seg = 8'h90;
-        4'hA: hex7seg = 8'h88;
-        4'hB: hex7seg = 8'h83;
-        4'hC: hex7seg = 8'hC6;
-        4'hD: hex7seg = 8'hA1;
-        4'hE: hex7seg = 8'h86;
-        4'hF: hex7seg = 8'h8E;
-        default: hex7seg = 8'hFF;
-      endcase
-    end
-  endfunction
+  // 仿真 UART 接收机: 在 uart_tx 上按 CB 拍采一位, 还原字节 (LSB 先发).
+  integer   bit_timer;
+  reg [3:0] bit_idx;       // 0=start 中点待确认, 1..8=data, 9=stop
+  reg [7:0] rx_shift;
+  reg       rx_busy;
+  integer   got_n;
+  reg [7:0] got [0:7];
 
-  reg [7:0] seg_at [0:5];
-  reg [7:0] exp_seg [0:5];
-  integer   k, m;
+  initial begin
+    rx_busy = 1'b0; bit_idx = 4'd0; bit_timer = 0; rx_shift = 8'd0; got_n = 0;
+  end
+
+  always @(posedge clk) begin
+    if (!rx_busy) begin
+      if (uart_tx === 1'b0) begin            // 检测到 start 位 (idle 为高)
+        rx_busy   <= 1'b1;
+        bit_timer <= CB/2;                   // 走到 start 中点再确认
+        bit_idx   <= 4'd0;
+        rx_shift  <= 8'd0;
+      end
+    end else begin
+      if (bit_timer > 1) begin
+        bit_timer <= bit_timer - 1;
+      end else begin
+        if (bit_idx == 4'd0) begin
+          bit_timer <= CB;                   // start 确认, 准备采 bit0
+          bit_idx   <= 4'd1;
+        end else if (bit_idx <= 4'd8) begin
+          rx_shift  <= {uart_tx, rx_shift[7:1]};   // 先发的低位右移到低位
+          bit_timer <= CB;
+          bit_idx   <= bit_idx + 4'd1;
+        end else begin
+          got[got_n] <= rx_shift;            // bit_idx==9: stop 位, 收一个字节
+          got_n      <= got_n + 1;
+          rx_busy    <= 1'b0;
+        end
+      end
+    end
+  end
+
+  // GPIO 首写监视: 复位后第一次 GPIO 写握手抓 wdata, 期望 main 第一条 GPIO=1.
+  reg [31:0] gpio_first;
+  reg        gpio_seen;
+
+  initial begin
+    gpio_seen = 1'b0; gpio_first = 32'd0;
+  end
+
+  always @(posedge clk) begin
+    if (rst_n && !gpio_seen && dut.gpio_valid && dut.gpio_ready && (|dut.mem_wstrb)) begin
+      gpio_first <= dut.mem_wdata;
+      gpio_seen  <= 1'b1;
+    end
+  end
 
   initial begin
     $dumpfile("build/top.vcd");
     $dumpvars(0, dut);
 
-    // seg_digit[k] 激活时显示 disp_data 的半字节 (5-k); 由 TRAP_PC 算期望段码.
-    for (k = 0; k < 6; k = k + 1) begin
-      m            = 5 - k;
-      exp_seg[k]   = hex7seg((TRAP_PC >> (m * 4)) & 4'hF);
-      seg_at[k]    = 8'hFF;
-    end
-
     repeat (2) @(posedge clk);
     rst_n <= 1;
 
-    wait (dut.cpu.trap);
-    #1;
-    if (led !== 8'h00)
-      $fatal(1, "trap 后 LED 应全亮(00), 得 %02x", led);
-    if (dut.cpu.pc !== TRAP_PC)
-      $fatal(1, "trap 时 PC 应为 %08x, 得 %08x", TRAP_PC, dut.cpu.pc);
+    wait (got_n == 3);
 
-    // 采样覆盖多次完整扫描, 记录每位激活时的段码.
-    repeat (300) @(posedge clk) begin
-      #1;
-      case (seg_digit)
-        6'b111110: seg_at[0] = seg;
-        6'b111101: seg_at[1] = seg;
-        6'b111011: seg_at[2] = seg;
-        6'b110111: seg_at[3] = seg;
-        6'b101111: seg_at[4] = seg;
-        6'b011111: seg_at[5] = seg;
-        default: ;
-      endcase
-    end
+    if (got[0] !== 8'h4F) $fatal(1, "byte0 预期 'O'(4f) 得 %02x", got[0]);
+    if (got[1] !== 8'h4B) $fatal(1, "byte1 预期 'K'(4b) 得 %02x", got[1]);
+    if (got[2] !== 8'h0A) $fatal(1, "byte2 预期 '\\n'(0a) 得 %02x", got[2]);
+    if (!gpio_seen)           $fatal(1, "未观察到 GPIO 写");
+    if (gpio_first !== 32'd1) $fatal(1, "GPIO 首写预期 1 得 %08x", gpio_first);
 
-    for (k = 0; k < 6; k = k + 1)
-      if (seg_at[k] !== exp_seg[k])
-        $fatal(1, "digit%0d 段码预期 %02x 得 %02x", k, exp_seg[k], seg_at[k]);
-
-    $display("TOP PASS: trap->LED and PC=%06x on 6-digit display verified", TRAP_PC[23:0]);
+    $display("TOP PASS: UART=\"OK\\n\", GPIO first=%0d", gpio_first);
     $finish;
   end
 
   initial begin
-    #2000000;
-    $fatal(1, "tb_top watchdog timeout");
+    #500000;
+    $fatal(1, "tb_top watchdog timeout (got_n=%0d)", got_n);
   end
 endmodule
