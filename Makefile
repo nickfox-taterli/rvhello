@@ -21,16 +21,16 @@ FW_FLAGS := -march=rv32im_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -n
             $(FW_OPT) -g3 -gdwarf-4 -fno-omit-frame-pointer -T fw/link.ld
 
 RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
-       src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v \
+       src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v src/periph/plic.v \
        src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/bscan_dtm.v \
        src/debug/riscv_debug_dm.v src/board/clk_pll.v src/board/top.v \
        src/board/seg_display.v src/periph/sram_async.v
 
-.PHONY: all sim sim-unit sim-privileged sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top sim-sram arch-test jtag-smoke bscan-smoke openocd-probe openocd-load gdb-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
+.PHONY: all sim sim-unit sim-privileged sim-m-disabled sim-timer sim-plic sim-debug-halt sim-jtag sim-top sim-sram arch-test jtag-smoke bscan-smoke openocd-probe openocd-load gdb-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
 
 all: sim
 
-sim: sim-unit sim-privileged sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top
+sim: sim-unit sim-privileged sim-m-disabled sim-timer sim-plic sim-debug-halt sim-jtag sim-top
 
 sim-privileged: build/privileged.vvp
 	$(VVP) build/privileged.vvp
@@ -91,6 +91,12 @@ sim-timer: build/timer.vvp
 
 build/timer.vvp: src/periph/timer.v sim/tb_timer.v | build
 	$(IVERILOG) -g2012 -s tb_timer -o $@ src/periph/timer.v sim/tb_timer.v
+
+sim-plic: build/plic.vvp
+	$(VVP) build/plic.vvp
+
+build/plic.vvp: src/periph/plic.v sim/tb_plic.v | build
+	$(IVERILOG) -g2012 -s tb_plic -o $@ src/periph/plic.v sim/tb_plic.v
 
 sim-top: build/top.vvp
 	$(VVP) build/top.vvp

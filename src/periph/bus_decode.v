@@ -39,6 +39,11 @@ module bus_decode #(
   input  wire        s_timer_ready,
   input  wire [31:0] s_timer_rdata,
 
+  // 从端: PLIC
+  output wire        s_plic_valid,
+  input  wire        s_plic_ready,
+  input  wire [31:0] s_plic_rdata,
+
   // 板载异步 SRAM, 固定映射 0x2000_0000-0x200f_ffff.
   output wire        s_sram_valid,
   input  wire        s_sram_ready,
@@ -49,6 +54,7 @@ module bus_decode #(
   //   0x1000_0000              GPIO           (addr[31:28]==1, [27:8]==0, [7:4]==0)
   //   0x1000_0010              UART           (同上, [7:4]==1)
   //   0x0200_0000 - 0x0200_ffff CLINT          (内部使用标准 msip/mtimecmp/mtime 偏移)
+  //   0x0c00_0000 - 0x0cff_ffff PLIC
   //   0x2000_0000 - 0x200f_ffff 外部 SRAM (普通数据区, 不允许取指)
   localparam integer BRAM_HIGH_LSB = $clog2(BRAM_WORDS) + 2;
   wire sel_bram = (m_addr[31:BRAM_HIGH_LSB] == {(32-BRAM_HIGH_LSB){1'b0}});
@@ -56,14 +62,17 @@ module bus_decode #(
   wire sel_gpio  = sel_mmio && (m_addr[7:4] == 4'h0);
   wire sel_uart  = sel_mmio && (m_addr[7:4] == 4'h1);
   wire sel_timer = (m_addr[31:16] == 16'h0200);
+  wire sel_plic  = (m_addr[31:24] == 8'h0c);
   wire sel_sram  = (m_addr[31:20] == 12'h200);
 
   // 只把 valid 发给命中的从端, 其余从端 valid=0, 不会产生任何写副作用.
-  wire access_ok = m_instr ? sel_bram : (sel_bram || sel_gpio || sel_uart || sel_timer || sel_sram);
+  wire access_ok = m_instr ? sel_bram :
+                   (sel_bram || sel_gpio || sel_uart || sel_timer || sel_plic || sel_sram);
   assign s_bram_valid  = m_valid && sel_bram;
   assign s_gpio_valid  = m_valid && !m_instr && sel_gpio;
   assign s_uart_valid  = m_valid && !m_instr && sel_uart;
   assign s_timer_valid = m_valid && !m_instr && sel_timer;
+  assign s_plic_valid  = m_valid && !m_instr && sel_plic;
   assign s_sram_valid  = m_valid && !m_instr && sel_sram;
 
   // ready 多路: 命中谁就跟谁握手;非法访问当拍就绪,不让核干等.
@@ -72,6 +81,7 @@ module bus_decode #(
        (!m_instr && sel_gpio)  ? s_gpio_ready  :
        (!m_instr && sel_uart)  ? s_uart_ready  :
        (!m_instr && sel_timer) ? s_timer_ready :
+       (!m_instr && sel_plic)  ? s_plic_ready  :
        (!m_instr && sel_sram)  ? s_sram_ready  :
                    m_valid;
 
@@ -84,6 +94,7 @@ module bus_decode #(
        sel_gpio  ? s_gpio_rdata  :
        sel_uart  ? s_uart_rdata  :
        sel_timer ? s_timer_rdata :
+       sel_plic  ? s_plic_rdata  :
        sel_sram  ? s_sram_rdata  :
                    32'h0000_0000;
 

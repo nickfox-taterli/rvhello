@@ -1,6 +1,6 @@
 `default_nettype none
 
-// SoC 顶层: RV32I 核 + 地址译码器 + BRAM/GPIO/UART/Timer/SRAM 从端.
+// SoC 顶层: RV32I 核 + 地址译码器 + BRAM/GPIO/UART/Timer/PLIC/SRAM 从端.
 // 外部 SRAM 固定映射为普通数据区 0x2000_0000-0x200f_ffff. 指令只能从 BRAM 取出.
 // 数码管显示架构 PC. LED 平时由 GPIO 驱动, trap 时全亮覆盖.
 module soc #(
@@ -8,7 +8,8 @@ module soc #(
   parameter integer REFRESH_HZ = 400,
   parameter integer UART_BAUD  = 115200,
   parameter         MEMFILE    = "program.hex",
-  parameter integer MEM_WORDS  = 4096
+  parameter integer MEM_WORDS  = 4096,
+  parameter integer PLIC_SOURCES = 16
 ) (
   input  wire        clk,
   input  wire        rst_n,
@@ -18,6 +19,7 @@ module soc #(
   input  wire        cpu_ttms,
   output wire        cpu_trtck,
   input  wire        cpu_trst_n,
+  input  wire [PLIC_SOURCES-1:0] irq_sources_async,
   output wire [7:0]  led,
   output wire [7:0]  seg,
   output wire [5:0]  seg_digit,
@@ -105,15 +107,19 @@ module soc #(
   wire        timer_valid;
   wire        timer_ready;
   wire [31:0] timer_rdata;
+  wire        plic_valid;
+  wire        plic_ready;
+  wire [31:0] plic_rdata;
   wire        sram_valid;
   wire        sram_ready;
   wire [31:0] sram_rdata;
   wire [31:0] gpio_out;
   wire [0:0]  timer_mtip;
   wire [0:0]  timer_msip;
+  wire        plic_meip;
 
   // 中断线
-  wire [31:0] irq_pending = {20'd0, 1'b0, 3'd0, timer_mtip[0],
+  wire [31:0] irq_pending = {20'd0, plic_meip, 3'd0, timer_mtip[0],
                              3'd0, timer_msip[0], 3'd0};
 
   clk_pll #(
@@ -220,6 +226,9 @@ module soc #(
     .s_timer_valid(timer_valid),
     .s_timer_ready(timer_ready),
     .s_timer_rdata(timer_rdata),
+    .s_plic_valid (plic_valid),
+    .s_plic_ready (plic_ready),
+    .s_plic_rdata (plic_rdata),
     .s_sram_valid (sram_valid),
     .s_sram_ready (sram_ready),
     .s_sram_rdata (sram_rdata)
@@ -303,6 +312,21 @@ module soc #(
     .timer_msip   (timer_msip)
   );
 
+  plic #(
+    .SOURCES(PLIC_SOURCES)
+  ) plic_inst (
+    .clk       (cpu_clk),
+    .resetn    (cpu_rstn),
+    .irq_async (irq_sources_async),
+    .sel_valid (plic_valid),
+    .mem_addr  (mem_addr),
+    .mem_wdata (mem_wdata),
+    .mem_wstrb (mem_wstrb),
+    .mem_ready (plic_ready),
+    .mem_rdata (plic_rdata),
+    .meip      (plic_meip)
+  );
+
   seg_display #(
     .CLOCK_HZ  (CLOCK_HZ),
     .REFRESH_HZ(REFRESH_HZ)
@@ -314,7 +338,7 @@ module soc #(
     .seg_digit(seg_digit)
   );
 
-  // 板载 LED 为低电平点亮.CLINT 的 MTIP 和 MSIP 已接到 CPU 标准中断位.
+  // 板载 LED 为低电平点亮.CLINT 和 PLIC 只接 CPU 的三个标准机器中断入口.
   assign led = trap ? 8'h00 : ~gpio_out[7:0];
 endmodule
 
@@ -324,7 +348,8 @@ module top #(
   parameter integer REFRESH_HZ = 400,
   parameter integer UART_BAUD  = 115200,
   parameter         MEMFILE    = "program.hex",
-  parameter integer MEM_WORDS  = 4096
+  parameter integer MEM_WORDS  = 4096,
+  parameter integer PLIC_SOURCES = 16
 ) (
   input  wire       clk,
   input  wire       rst_n,
@@ -345,7 +370,8 @@ module top #(
     .REFRESH_HZ(REFRESH_HZ),
     .UART_BAUD (UART_BAUD),
     .MEMFILE   (MEMFILE),
-    .MEM_WORDS (MEM_WORDS)
+    .MEM_WORDS (MEM_WORDS),
+    .PLIC_SOURCES(PLIC_SOURCES)
   ) impl (
     .clk       (clk),
     .rst_n     (rst_n && cpu_tsrst_n),
@@ -355,6 +381,7 @@ module top #(
     .cpu_ttms  (cpu_ttms),
     .cpu_trtck (cpu_trtck),
     .cpu_trst_n(cpu_trst_n),
+    .irq_sources_async({PLIC_SOURCES{1'b0}}),
     .led       (led),
     .seg       (seg),
     .seg_digit (seg_digit),
@@ -379,7 +406,8 @@ module top_sram #(
   parameter integer REFRESH_HZ = 400,
   parameter integer UART_BAUD  = 115200,
   parameter         MEMFILE    = "program.hex",
-  parameter integer MEM_WORDS  = 16384
+  parameter integer MEM_WORDS  = 16384,
+  parameter integer PLIC_SOURCES = 16
 ) (
   input  wire        clk,
   input  wire        rst_n,
@@ -412,7 +440,8 @@ module top_sram #(
     .REFRESH_HZ(REFRESH_HZ),
     .UART_BAUD (UART_BAUD),
     .MEMFILE   (MEMFILE),
-    .MEM_WORDS (MEM_WORDS)
+    .MEM_WORDS (MEM_WORDS),
+    .PLIC_SOURCES(PLIC_SOURCES)
   ) impl (
     .clk       (clk),
     .rst_n     (rst_n && cpu_tsrst_n),
@@ -422,6 +451,7 @@ module top_sram #(
     .cpu_ttms  (cpu_ttms),
     .cpu_trtck (cpu_trtck),
     .cpu_trst_n(cpu_trst_n),
+    .irq_sources_async({PLIC_SOURCES{1'b0}}),
     .led       (led),
     .seg       (seg),
     .seg_digit (seg_digit),

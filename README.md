@@ -18,8 +18,14 @@ RV32I 单核, 取指与访存共用一组 valid/ready 总线, 经地址译码器
 | 0x0200_0000 + 4*hart | CLINT MSIP | 软件中断位,RW |
 | 0x0200_4000 + 8*hart | CLINT MTIMECMP | 64 位机器定时器比较值,RW |
 | 0x0200_bff8 | CLINT MTIME | 64 位机器定时器计数,RW |
+| 0x0c00_0004 - 0x0c00_0080 | PLIC priority | 固定读 1,当前写入忽略 |
+| 0x0c00_1000 - 0x0c00_1004 | PLIC pending | source ID 位图,只读 |
+| 0x0c00_1080 - 0x0c00_1084 | PLIC trigger | source ID 位图,0=电平,1=上升沿 |
+| 0x0c00_2000 - 0x0c00_2004 | PLIC enable | source ID 位图,RW |
+| 0x0c20_0000 | PLIC threshold | 固定读 0,当前写入忽略 |
+| 0x0c20_0004 | PLIC claim/complete | 读 claim source ID,写 complete source ID |
 
-CPU 使用 32 位 IRQ pending 向量,位号直接对应 `mcause`; CLINT 的 MSIP 和 MTIP 分别接到 bit 3 和 bit 7.CLINT 使用常见寄存器布局,当前实例化一个 hart,RTL 参数可以扩展多个 hart 的 `msip` 和 `mtimecmp`,所有 hart 共用 `mtime`.核实现标准机器态异常入口和精确 `mepc`,并提供 `mstatus`, `mie`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mip`,机器 ID 以及 64 位 `mcycle/minstret`.用户别名 `cycle/instret` 为只读,所有 CSR 的 WARL/WPRI 掩码在 RTL 中显式处理.
+CPU 只接收标准的 MSIP,MTIP 和 MEIP,分别位于 `mcause` 3,7 和 11.PLIC 默认实例化 16 路,参数可切换到 32 路,外设 source ID 从 1 开始.异步源统一经过两级同步,pending 会把同步器捕获到的边沿脉冲保持到 claim.当前所有源优先级固定为 1,同时 pending 时选择较小 source ID;threshold 保留为 0,地址地图为以后加入可编程优先级留好位置.CLINT 使用常见寄存器布局,当前实例化一个 hart,RTL 参数可以扩展多个 hart 的 `msip` 和 `mtimecmp`,所有 hart 共用 `mtime`.核实现标准机器态异常入口和精确 `mepc`,并提供 `mstatus`, `mie`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mip`,机器 ID 以及 64 位 `mcycle/minstret`.用户别名 `cycle/instret` 为只读,所有 CSR 的 WARL/WPRI 掩码在 RTL 中显式处理.
 
 ECALL,非法指令,指令/Load/Store 地址不对齐以及三类访问错误都会写入 `mcause/mepc/mtval` 后跳到 `mtvec`.WFI 会停止取指直到本地使能的中断待决或调试 halt,FENCE.I 会丢弃取指状态并从下一条指令重新取指.
 
@@ -49,7 +55,7 @@ ECALL,非法指令,指令/Load/Store 地址不对齐以及三类访问错误都�
 ## 目录
 
 - `src/core/` 核与 BRAM 后端
-- `src/periph/` 地址译码器 + GPIO / UART / Timer
+- `src/periph/` 地址译码器 + GPIO / UART / Timer / PLIC
 - `src/board/` 顶层与数码管扫描
 - `fw/` 固件源码 (link.ld / start.S / main.c), `-march=rv32im_zicsr_zifencei -mabi=ilp32`
 - `sim/` 仿真测试台

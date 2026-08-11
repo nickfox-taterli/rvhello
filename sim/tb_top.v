@@ -83,16 +83,17 @@ module tb_top;
     if (dut.impl.cpu.csr_mepc[1:0] !== 2'b00)
       $fatal(1, "mepc 未按指令对齐 %08x", dut.impl.cpu.csr_mepc);
 
-    // 同时送入 bit 11 和 bit 7,确认通用 IRQ 向量会选择较高编号的外部中断.
+    // 让 PLIC source 1 产生电平中断,确认汇总后的唯一外部入口是标准 MEIP/cause 11.
     @(negedge dut.impl.cpu_clk);
     dut.impl.cpu.csr_mie[11] = 1'b1;
-    force dut.impl.irq_pending = 32'h0000_0880;
+    dut.impl.plic_inst.enable[1] = 1'b1;
+    force dut.impl.irq_sources_async[0] = 1'b1;
     wait (dut.impl.cpu.csr_mcause == 32'h8000_000b);
-    release dut.impl.irq_pending;
+    release dut.impl.irq_sources_async[0];
     wait (dut.impl.cpu.csr_mstatus[3]);
     #1;
     if (dut.impl.cpu.csr_mcause !== 32'h8000_000b)
-      $fatal(1, "多 IRQ 优先级预期 cause 11 得 %08x", dut.impl.cpu.csr_mcause);
+      $fatal(1, "PLIC MEIP 应进入 machine external interrupt 得 %08x", dut.impl.cpu.csr_mcause);
 
     // 单独置 MSIP,确认 CLINT 软件中断接到标准 cause 3.
     @(negedge dut.impl.cpu_clk);
