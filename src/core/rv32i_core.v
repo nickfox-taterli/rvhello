@@ -1,6 +1,6 @@
 `default_nettype none
 
-// 完整 RV32I 主体 + M 扩展乘法 + FENCE (NOP)
+// RV32IM/Zicsr/Zifencei 主体.
 // 取指与访存共用同一组总线握手; 引入 S_MEM 状态等待数据返回.
 
 // | 格式 | 主要用途 | 典型指令 |
@@ -34,6 +34,7 @@ module rv32i_core #(
     output reg         mem_valid,
     output reg         mem_instr,
     input  wire        mem_ready,
+    input  wire        mem_error,
     output reg  [31:0] mem_addr,
     output reg  [31:0] mem_wdata,
     output reg  [ 3:0] mem_wstrb,
@@ -47,7 +48,7 @@ module rv32i_core #(
   localparam [2:0] S_EXEC  = 3'd1;
   localparam [2:0] S_MEM   = 3'd2;
   localparam [2:0] S_PCPI  = 3'd3;
-  localparam [2:0] S_TRAP  = 3'd4;
+  localparam [2:0] S_WFI   = 3'd4;
   localparam [2:0] S_HALT  = 3'd5;
 
   reg  [2:0]  state;
@@ -65,6 +66,14 @@ module rv32i_core #(
   reg  [31:0] csr_mtvec;
   reg  [31:0] csr_mepc;
   reg  [31:0] csr_mcause;
+  reg  [31:0] csr_mtval;
+  reg  [31:0] csr_mscratch;
+  reg  [63:0] csr_mcycle;
+  reg  [63:0] csr_minstret;
+
+  localparam [31:0] MISA_VALUE      = ENABLE_M_PCPI ? 32'h4000_1100 : 32'h4000_0100;
+  localparam [31:0] MIE_WRITE_MASK  = 32'hFFFF_0888;
+  localparam [31:0] MSTATUS_WR_MASK = 32'h0000_0088;
 
   reg         irq_any;
   reg  [4:0]  irq_cause;
@@ -127,6 +136,10 @@ module rv32i_core #(
   reg        decoded_csr_write;
   reg        decoded_mret;
   reg        decoded_ebreak;
+  reg        decoded_ecall;
+  reg        decoded_wfi;
+  reg        decoded_fence_i;
+  reg        decoded_misaligned;
   reg [31:0] decoded_result;
   reg [31:0] decoded_next_pc;
   reg [31:0] decoded_address;
@@ -136,20 +149,38 @@ module rv32i_core #(
   reg [31:0] decoded_csr_wdata;
 
   reg        csr_addr_legal;
+  reg        csr_addr_writable;
   reg [31:0] csr_rdata;
 
   always @* begin
-    csr_addr_legal = 1'b1;
+    csr_addr_legal    = 1'b1;
+    csr_addr_writable = 1'b1;
     case (ir[31:20])
       12'h300: csr_rdata = csr_mstatus;
+      12'h301: begin csr_rdata = MISA_VALUE; csr_addr_writable = 1'b0; end
       12'h304: csr_rdata = csr_mie;
       12'h305: csr_rdata = csr_mtvec;
+      12'h340: csr_rdata = csr_mscratch;
       12'h341: csr_rdata = csr_mepc;
       12'h342: csr_rdata = csr_mcause;
+      12'h343: csr_rdata = csr_mtval;
       12'h344: csr_rdata = irq_pending;
+      12'hb00: csr_rdata = csr_mcycle[31:0];
+      12'hb02: csr_rdata = csr_minstret[31:0];
+      12'hb80: csr_rdata = csr_mcycle[63:32];
+      12'hb82: csr_rdata = csr_minstret[63:32];
+      12'hc00: begin csr_rdata = csr_mcycle[31:0]; csr_addr_writable = 1'b0; end
+      12'hc02: begin csr_rdata = csr_minstret[31:0]; csr_addr_writable = 1'b0; end
+      12'hc80: begin csr_rdata = csr_mcycle[63:32]; csr_addr_writable = 1'b0; end
+      12'hc82: begin csr_rdata = csr_minstret[63:32]; csr_addr_writable = 1'b0; end
+      12'hf11: begin csr_rdata = 32'd0; csr_addr_writable = 1'b0; end
+      12'hf12: begin csr_rdata = 32'd0; csr_addr_writable = 1'b0; end
+      12'hf13: begin csr_rdata = 32'd1; csr_addr_writable = 1'b0; end
+      12'hf14: begin csr_rdata = 32'd0; csr_addr_writable = 1'b0; end
       default: begin
         csr_rdata      = 32'd0;
         csr_addr_legal = 1'b0;
+        csr_addr_writable = 1'b0;
       end
     endcase
   end
@@ -164,6 +195,10 @@ module rv32i_core #(
     decoded_csr_write    = 1'b0;
     decoded_mret         = 1'b0;
     decoded_ebreak       = 1'b0;
+    decoded_ecall        = 1'b0;
+    decoded_wfi          = 1'b0;
+    decoded_fence_i      = 1'b0;
+    decoded_misaligned   = 1'b0;
     decoded_result       = 32'd0;
     decoded_next_pc      = pc + 32'd4;
     decoded_address      = 32'd0;
@@ -277,10 +312,10 @@ module rv32i_core #(
           decoded_legal = 1'b0;
         // LH/LHU 要求地址半字对齐 (位 0 = 0).
         if (((funct3 == 3'b001) || (funct3 == 3'b101)) && decoded_address[0])
-          decoded_legal = 1'b0;
+          decoded_misaligned = 1'b1;
         // LW 要求地址字对齐 (位 [1:0] = 0).
         if ((funct3 == 3'b010) && (|decoded_address[1:0]))
-          decoded_legal = 1'b0;
+          decoded_misaligned = 1'b1;
       end
 
       7'b0100011: begin  // STORE
@@ -294,20 +329,26 @@ module rv32i_core #(
           3'b001: begin  // SH
             decoded_store_strobe = decoded_address[1] ? 4'b1100 : 4'b0011;
             decoded_store_data   = {2{rs2_value[15:0]}};
-            if (decoded_address[0]) decoded_legal = 1'b0;
+            if (decoded_address[0]) decoded_misaligned = 1'b1;
           end
           3'b010: begin  // SW
             decoded_store_strobe = 4'b1111;
             decoded_store_data   = rs2_value;
-            if (|decoded_address[1:0]) decoded_legal = 1'b0;
+            if (|decoded_address[1:0]) decoded_misaligned = 1'b1;
           end
           default: decoded_legal = 1'b0;
         endcase
       end
 
       7'b0001111: begin  // FENCE / FENCE.I
-        // 本核顺序执行, 无乱序/缓存/写缓冲, 故无需任何排空, 直接当 NOP (仅要求 funct3=0).
-        if (funct3 != 3'b000) decoded_legal = 1'b0;
+        if (funct3 == 3'b000) begin
+          // 顺序总线没有待排空写事务,FENCE 本身不需要额外动作.
+        end else if (funct3 == 3'b001) begin
+          // Zifencei 要求实现忽略保留的 rd,rs1 和 imm 字段.
+          decoded_fence_i = 1'b1;
+        end else begin
+          decoded_legal = 1'b0;
+        end
       end
 
       7'b0001011: begin  // CUSTOM-0: GPO.WR rs1 -> 把 rs1 直接送总线写到 GPIO (0x1000_0000)
@@ -327,13 +368,14 @@ module rv32i_core #(
 
       7'b1110011: begin  // SYSTEM: 机器模式 CSR, MRET 和 WFI
         if (funct3 == 3'b000) begin
-          // MRET 恢复中断前 PC; WFI 在这个小核里允许当 NOP 使用.
-          if ((ir[31:20] == 12'h302) && (rs1 == 5'd0) && (rd == 5'd0)) begin
+          if ((ir[31:20] == 12'h000) && (rs1 == 5'd0) && (rd == 5'd0)) begin
+            decoded_ecall = 1'b1;
+          end else if ((ir[31:20] == 12'h302) && (rs1 == 5'd0) && (rd == 5'd0)) begin
             decoded_mret = 1'b1;
           end else if ((ir[31:20] == 12'h001) && (rs1 == 5'd0) && (rd == 5'd0)) begin
             decoded_ebreak = 1'b1;
           end else if ((ir[31:20] == 12'h105) && (rs1 == 5'd0) && (rd == 5'd0)) begin
-            decoded_next_pc = pc + 32'd4;
+            decoded_wfi = 1'b1;
           end else begin
             decoded_legal = 1'b0;
           end
@@ -367,6 +409,8 @@ module rv32i_core #(
             end
             default: decoded_legal = 1'b0;
           endcase
+          if (decoded_csr_write && !csr_addr_writable)
+            decoded_legal = 1'b0;
         end else begin
           decoded_legal = 1'b0;
         end
@@ -445,11 +489,15 @@ module rv32i_core #(
       load_funct3  <= 3'd0;
       load_lane    <= 2'd0;
       pending_load <= 1'b0;
-      csr_mstatus  <= 32'd0;
+      csr_mstatus  <= 32'h0000_1800;
       csr_mie      <= 32'd0;
       csr_mtvec    <= 32'd0;
       csr_mepc     <= 32'd0;
       csr_mcause   <= 32'd0;
+      csr_mtval    <= 32'd0;
+      csr_mscratch <= 32'd0;
+      csr_mcycle   <= 64'd0;
+      csr_minstret <= 64'd0;
       halt_pending <= 1'b0;
       halt_resume_exec <= 1'b0;
       step_active  <= 1'b0;
@@ -459,6 +507,9 @@ module rv32i_core #(
       dbg_reg_error <= 1'b0;
       // 不复位通用寄存器, x0 的读旁路始终返回零.
     end else begin
+      csr_mcycle <= csr_mcycle + 64'd1;
+      if (retire)
+        csr_minstret <= csr_minstret + 64'd1;
       dbg_reg_ready <= 1'b0;
       dbg_reg_error <= 1'b0;
       // halt 请求可能只保持一拍,先锁存下来,等当前总线或 PCPI 事务完成再停.
@@ -469,8 +520,26 @@ module rv32i_core #(
           // 已经发出的取指不能撤销. ready 后可以带着取到的 IR 停住,恢复时再执行.
           if (mem_valid && mem_ready) begin
             mem_valid <= 1'b0;
-            ir        <= mem_rdata;
-            if (halt_pending || dbg_halt_req) begin
+            if (|pc[1:0]) begin
+              csr_mepc           <= pc;
+              csr_mcause         <= 32'd0;
+              csr_mtval          <= pc;
+              csr_mstatus[7]     <= csr_mstatus[3];
+              csr_mstatus[3]     <= 1'b0;
+              csr_mstatus[12:11] <= 2'b11;
+              pc                 <= {csr_mtvec[31:2], 2'b00};
+              trap               <= 1'b1;
+            end else if (mem_error) begin
+              csr_mepc           <= pc;
+              csr_mcause         <= 32'd1;
+              csr_mtval          <= pc;
+              csr_mstatus[7]     <= csr_mstatus[3];
+              csr_mstatus[3]     <= 1'b0;
+              csr_mstatus[12:11] <= 2'b11;
+              pc                 <= {csr_mtvec[31:2], 2'b00};
+              trap               <= 1'b1;
+            end else if (halt_pending || dbg_halt_req) begin
+              ir                 <= mem_rdata;
               state            <= S_HALT;
               halt_resume_exec <= 1'b1;
               halt_pending     <= 1'b0;
@@ -478,11 +547,13 @@ module rv32i_core #(
             end else if (interrupt_enabled) begin
               csr_mepc           <= {pc[31:2], 2'b00};
               csr_mcause         <= {1'b1, 26'd0, irq_cause};
+              csr_mtval          <= 32'd0;
               csr_mstatus[7]     <= csr_mstatus[3];
               csr_mstatus[3]     <= 1'b0;
               csr_mstatus[12:11] <= 2'b11;
               pc                 <= interrupt_pc;
             end else begin
+              ir    <= mem_rdata;
               state <= S_EXEC;
             end
           end else if (mem_valid) begin
@@ -495,6 +566,7 @@ module rv32i_core #(
           end else if (interrupt_enabled) begin
             csr_mepc         <= {pc[31:2], 2'b00};
             csr_mcause       <= {1'b1, 26'd0, irq_cause};
+            csr_mtval        <= 32'd0;
             csr_mstatus[7]   <= csr_mstatus[3];
             csr_mstatus[3]   <= 1'b0;
             csr_mstatus[12:11] <= 2'b11;
@@ -509,18 +581,51 @@ module rv32i_core #(
 
         S_EXEC: begin
           if (!decoded_legal) begin
-            trap  <= 1'b1;
-            state <= S_TRAP;
+            csr_mepc           <= pc;
+            csr_mcause         <= 32'd2;
+            csr_mtval          <= ir;
+            csr_mstatus[7]     <= csr_mstatus[3];
+            csr_mstatus[3]     <= 1'b0;
+            csr_mstatus[12:11] <= 2'b11;
+            pc                 <= {csr_mtvec[31:2], 2'b00};
+            trap               <= 1'b1;
+            state              <= S_FETCH;
           end else if (((opcode == 7'b1100011) || (opcode == 7'b1101111) ||
                         (opcode == 7'b1100111)) && (|decoded_next_pc[1:0])) begin
-            // 无 C 扩展, 控制流目标必须 4 字节对齐, 否则视为非法.
-            trap  <= 1'b1;
-            state <= S_TRAP;
+            csr_mepc           <= pc;
+            csr_mcause         <= 32'd0;
+            csr_mtval          <= decoded_next_pc;
+            csr_mstatus[7]     <= csr_mstatus[3];
+            csr_mstatus[3]     <= 1'b0;
+            csr_mstatus[12:11] <= 2'b11;
+            pc                 <= {csr_mtvec[31:2], 2'b00};
+            trap               <= 1'b1;
+            state              <= S_FETCH;
+          end else if (decoded_misaligned) begin
+            csr_mepc           <= pc;
+            csr_mcause         <= decoded_is_load ? 32'd4 : 32'd6;
+            csr_mtval          <= decoded_address;
+            csr_mstatus[7]     <= csr_mstatus[3];
+            csr_mstatus[3]     <= 1'b0;
+            csr_mstatus[12:11] <= 2'b11;
+            pc                 <= {csr_mtvec[31:2], 2'b00};
+            trap               <= 1'b1;
+            state              <= S_FETCH;
+          end else if (decoded_ecall) begin
+            csr_mepc           <= pc;
+            csr_mcause         <= 32'd11;
+            csr_mtval          <= 32'd0;
+            csr_mstatus[7]     <= csr_mstatus[3];
+            csr_mstatus[3]     <= 1'b0;
+            csr_mstatus[12:11] <= 2'b11;
+            pc                 <= {csr_mtvec[31:2], 2'b00};
+            trap               <= 1'b1;
+            state              <= S_FETCH;
           end else if (decoded_mret) begin
             pc                 <= csr_mepc;
             csr_mstatus[3]     <= csr_mstatus[7];
             csr_mstatus[7]     <= 1'b1;
-            csr_mstatus[12:11] <= 2'b00;
+            csr_mstatus[12:11] <= 2'b11;
             retire             <= 1'b1;
             if (halt_pending || dbg_halt_req || step_active) begin
               mem_valid        <= 1'b0;
@@ -536,7 +641,7 @@ module rv32i_core #(
               mem_wstrb <= 4'b0000;
               state     <= S_FETCH;
             end
-          end else if (decoded_ebreak) begin
+          end else if (decoded_ebreak && csr_dcsr[15]) begin
             // EBREAK 在调试功能启用后进入 halt,PC 留在断点指令上供调试器检查.
             mem_valid        <= 1'b0;
             state            <= S_HALT;
@@ -545,6 +650,28 @@ module rv32i_core #(
             halt_pending     <= 1'b0;
             step_active      <= 1'b0;
             csr_dcsr[8:6]    <= 3'd1;
+          end else if (decoded_ebreak) begin
+            csr_mepc           <= pc;
+            csr_mcause         <= 32'd3;
+            csr_mtval          <= 32'd0;
+            csr_mstatus[7]     <= csr_mstatus[3];
+            csr_mstatus[3]     <= 1'b0;
+            csr_mstatus[12:11] <= 2'b11;
+            pc                 <= {csr_mtvec[31:2], 2'b00};
+            trap               <= 1'b1;
+            state              <= S_FETCH;
+          end else if (decoded_wfi) begin
+            pc                 <= pc + 32'd4;
+            retire             <= 1'b1;
+            mem_valid          <= 1'b0;
+            state              <= S_WFI;
+          end else if (decoded_fence_i) begin
+            // 丢掉所有取指状态并留一个空拍,下一拍从顺序 PC 重新发请求.
+            ir        <= 32'd0;
+            pc        <= pc + 32'd4;
+            retire    <= 1'b1;
+            mem_valid <= 1'b0;
+            state     <= S_FETCH;
           end else if (decoded_start_mem) begin
             // 一次性锁存完整访存请求; S_MEM 无论等待多久都不会重新译码.
             mem_valid    <= 1'b1;
@@ -565,12 +692,18 @@ module rv32i_core #(
               regs[rd] <= decoded_result;
             if (decoded_csr_write) begin
               case (decoded_csr_addr)
-                12'h300: csr_mstatus <= decoded_csr_wdata & 32'h0000_1888;
-                12'h304: csr_mie     <= decoded_csr_wdata;
+                12'h300: csr_mstatus <= (decoded_csr_wdata & MSTATUS_WR_MASK) | 32'h0000_1800;
+                12'h304: csr_mie     <= decoded_csr_wdata & MIE_WRITE_MASK;
                 12'h305: csr_mtvec   <= {decoded_csr_wdata[31:2],
                                          (decoded_csr_wdata[1:0] == 2'b01) ? 2'b01 : 2'b00};
+                12'h340: csr_mscratch <= decoded_csr_wdata;
                 12'h341: csr_mepc    <= {decoded_csr_wdata[31:2], 2'b00};
                 12'h342: csr_mcause  <= decoded_csr_wdata;
+                12'h343: csr_mtval   <= decoded_csr_wdata;
+                12'hb00: csr_mcycle[31:0] <= decoded_csr_wdata;
+                12'hb02: csr_minstret[31:0] <= decoded_csr_wdata;
+                12'hb80: csr_mcycle[63:32] <= decoded_csr_wdata;
+                12'hb82: csr_minstret[63:32] <= decoded_csr_wdata;
                 default: begin end  // mip 的 MTIP 来自硬件, 软件写入不改变它.
               endcase
             end
@@ -596,31 +729,43 @@ module rv32i_core #(
         S_MEM: begin
           if (mem_valid && mem_ready) begin
             mem_valid <= 1'b0;
-            if (pending_load && load_rd != 5'd0) begin
-              case (load_funct3)
-                3'b000: regs[load_rd] <= {{24{selected_halfword[7]}}, selected_halfword[7:0]};   // LB
-                3'b001: regs[load_rd] <= {{16{selected_halfword[15]}}, selected_halfword};      // LH
-                3'b010: regs[load_rd] <= mem_rdata;                                              // LW
-                3'b100: regs[load_rd] <= {24'b0, selected_halfword[7:0]};                        // LBU
-                3'b101: regs[load_rd] <= {16'b0, selected_halfword};                             // LHU
-                default: regs[load_rd] <= regs[load_rd];  // 非法 funct3 已在 EXEC 拒绝.
-              endcase
-            end
-            pc     <= pc + 32'd4;
-            retire <= 1'b1;
-            if (halt_pending || dbg_halt_req || step_active) begin
-              mem_valid        <= 1'b0;
-              state            <= S_HALT;
-              halt_resume_exec <= 1'b0;
-              halt_pending     <= 1'b0;
-              step_active      <= 1'b0;
-              csr_dcsr[8:6]    <= step_active ? 3'd4 : 3'd3;
+            if (mem_error) begin
+              csr_mepc           <= pc;
+              csr_mcause         <= pending_load ? 32'd5 : 32'd7;
+              csr_mtval          <= mem_addr;
+              csr_mstatus[7]     <= csr_mstatus[3];
+              csr_mstatus[3]     <= 1'b0;
+              csr_mstatus[12:11] <= 2'b11;
+              pc                 <= {csr_mtvec[31:2], 2'b00};
+              trap               <= 1'b1;
+              state              <= S_FETCH;
             end else begin
-              mem_valid <= 1'b1;
-              mem_instr <= 1'b1;
-              mem_addr  <= pc + 32'd4;
-              mem_wstrb <= 4'b0000;
-              state     <= S_FETCH;
+              if (pending_load && load_rd != 5'd0) begin
+                case (load_funct3)
+                  3'b000: regs[load_rd] <= {{24{selected_halfword[7]}}, selected_halfword[7:0]}; // LB
+                  3'b001: regs[load_rd] <= {{16{selected_halfword[15]}}, selected_halfword};     // LH
+                  3'b010: regs[load_rd] <= mem_rdata;                                             // LW
+                  3'b100: regs[load_rd] <= {24'b0, selected_halfword[7:0]};                       // LBU
+                  3'b101: regs[load_rd] <= {16'b0, selected_halfword};                            // LHU
+                  default: regs[load_rd] <= regs[load_rd]; // 非法 funct3 已在 EXEC 拒绝.
+                endcase
+              end
+              pc     <= pc + 32'd4;
+              retire <= 1'b1;
+              if (halt_pending || dbg_halt_req || step_active) begin
+                mem_valid        <= 1'b0;
+                state            <= S_HALT;
+                halt_resume_exec <= 1'b0;
+                halt_pending     <= 1'b0;
+                step_active      <= 1'b0;
+                csr_dcsr[8:6]    <= step_active ? 3'd4 : 3'd3;
+              end else begin
+                mem_valid <= 1'b1;
+                mem_instr <= 1'b1;
+                mem_addr  <= pc + 32'd4;
+                mem_wstrb <= 4'b0000;
+                state     <= S_FETCH;
+              end
             end
           end
         end
@@ -649,6 +794,19 @@ module rv32i_core #(
           end
         end
 
+        S_WFI: begin
+          mem_valid <= 1'b0;
+          if (halt_pending || dbg_halt_req) begin
+            state            <= S_HALT;
+            halt_resume_exec <= 1'b0;
+            halt_pending     <= 1'b0;
+            csr_dcsr[8:6]    <= 3'd3;
+          end else if (irq_any) begin
+            // WFI 可以在全局 MIE 关闭时醒来,中断是否进入 trap 仍由 FETCH 边界判断.
+            state <= S_FETCH;
+          end
+        end
+
         S_HALT: begin
           // 这里只冻结核状态,系统时钟和外设继续运行. resume 后从精确边界接着走.
           mem_valid <= 1'b0;
@@ -660,29 +818,35 @@ module rv32i_core #(
                 regs[dbg_reg_addr[4:0]] <= dbg_reg_wdata;
             end else begin
               case (dbg_reg_addr)
-                16'h0300: begin dbg_reg_rdata <= csr_mstatus; if (dbg_reg_write) csr_mstatus <= dbg_reg_wdata & 32'h0000_1888; end
-                16'h0301: begin dbg_reg_rdata <= ENABLE_M_PCPI ? 32'h4000_1100 : 32'h4000_0100; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
-                16'h0304: begin dbg_reg_rdata <= csr_mie;     if (dbg_reg_write) csr_mie <= dbg_reg_wdata; end
-                16'h0305: begin dbg_reg_rdata <= csr_mtvec;   if (dbg_reg_write) csr_mtvec <= {dbg_reg_wdata[31:2], 2'b00}; end
+                16'h0300: begin dbg_reg_rdata <= csr_mstatus; if (dbg_reg_write) csr_mstatus <= (dbg_reg_wdata & MSTATUS_WR_MASK) | 32'h0000_1800; end
+                16'h0301: begin dbg_reg_rdata <= MISA_VALUE; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
+                16'h0304: begin dbg_reg_rdata <= csr_mie;     if (dbg_reg_write) csr_mie <= dbg_reg_wdata & MIE_WRITE_MASK; end
+                16'h0305: begin dbg_reg_rdata <= csr_mtvec;   if (dbg_reg_write) csr_mtvec <= {dbg_reg_wdata[31:2], (dbg_reg_wdata[1:0] == 2'b01) ? 2'b01 : 2'b00}; end
+                16'h0340: begin dbg_reg_rdata <= csr_mscratch; if (dbg_reg_write) csr_mscratch <= dbg_reg_wdata; end
                 16'h0341: begin dbg_reg_rdata <= csr_mepc;    if (dbg_reg_write) csr_mepc <= {dbg_reg_wdata[31:2], 2'b00}; end
                 16'h0342: begin dbg_reg_rdata <= csr_mcause;  if (dbg_reg_write) csr_mcause <= dbg_reg_wdata; end
+                16'h0343: begin dbg_reg_rdata <= csr_mtval;   if (dbg_reg_write) csr_mtval <= dbg_reg_wdata; end
                 16'h0344: begin dbg_reg_rdata <= irq_pending; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
+                16'h0b00: begin dbg_reg_rdata <= csr_mcycle[31:0]; if (dbg_reg_write) csr_mcycle[31:0] <= dbg_reg_wdata; end
+                16'h0b02: begin dbg_reg_rdata <= csr_minstret[31:0]; if (dbg_reg_write) csr_minstret[31:0] <= dbg_reg_wdata; end
+                16'h0b80: begin dbg_reg_rdata <= csr_mcycle[63:32]; if (dbg_reg_write) csr_mcycle[63:32] <= dbg_reg_wdata; end
+                16'h0b82: begin dbg_reg_rdata <= csr_minstret[63:32]; if (dbg_reg_write) csr_minstret[63:32] <= dbg_reg_wdata; end
                 16'h07b0: begin
                   dbg_reg_rdata <= csr_dcsr;
                   if (dbg_reg_write)
-                    csr_dcsr <= {4'd4, 17'd0, csr_dcsr[10:6], 3'd0, dbg_reg_wdata[2], 2'b11};
+                    csr_dcsr <= {4'd4, dbg_reg_wdata[27:15], 4'd0, csr_dcsr[10:6], 3'd0, dbg_reg_wdata[2], 2'b11};
                 end
                 16'h07b1: begin
                   dbg_reg_rdata <= pc;
                   if (dbg_reg_write) begin
-                    pc <= {dbg_reg_wdata[31:1], 1'b0};
+                    pc <= {dbg_reg_wdata[31:2], 2'b00};
                     // DPC 被调试器改写后,之前预取的 IR 已经不再对应这个 PC.
                     halt_resume_exec <= 1'b0;
                   end
                 end
-                16'h0f11,
-                16'h0f12,
-                16'h0f13,
+                16'h0f11: begin dbg_reg_rdata <= 32'd0; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
+                16'h0f12: begin dbg_reg_rdata <= 32'd0; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
+                16'h0f13: begin dbg_reg_rdata <= 32'd1; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
                 16'h0f14: begin dbg_reg_rdata <= 32'd0; if (dbg_reg_write) dbg_reg_error <= 1'b1; end
                 default: begin dbg_reg_rdata <= 32'd0; dbg_reg_error <= 1'b1; end
               endcase
@@ -702,9 +866,8 @@ module rv32i_core #(
           end
         end
 
-        default: begin  // S_TRAP: 终止态, 停止发出存储器请求.
-          state     <= S_TRAP;
-          trap      <= 1'b1;
+        default: begin
+          state     <= S_FETCH;
           mem_valid <= 1'b0;
         end
       endcase

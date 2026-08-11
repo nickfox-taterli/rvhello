@@ -34,6 +34,7 @@ module tb_debug_halt;
     .dbg_reg_valid(dbg_reg_valid), .dbg_reg_write(dbg_reg_write), .dbg_reg_addr(dbg_reg_addr),
     .dbg_reg_wdata(dbg_reg_wdata), .dbg_reg_rdata(), .dbg_reg_ready(), .dbg_reg_error(),
     .trap(), .mem_valid(mem_valid), .mem_instr(mem_instr), .mem_ready(mem_ready),
+    .mem_error(1'b0),
     .mem_addr(mem_addr), .mem_wdata(), .mem_wstrb(), .mem_rdata(mem_rdata),
     .retire(retire), .pc(pc)
   );
@@ -109,6 +110,7 @@ module tb_debug_halt;
       $fatal(1, "DPC 改写后没有从新地址重新取指");
 
     // 软件断点恢复原指令后,resume 必须重新从 BRAM 读取,不能重放旧 EBREAK.
+    dut.csr_dcsr[15] = 1'b1;
     instr_c <= 32'h0010_0073;
     wait (halted);
     @(negedge clk);

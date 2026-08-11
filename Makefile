@@ -17,7 +17,7 @@ RISCV_GCC     := $(RISCV_PREFIX)gcc
 RISCV_OBJCOPY := $(RISCV_PREFIX)objcopy
 RISCV_OBJDUMP := $(RISCV_PREFIX)objdump
 FW_OPT ?= -Og
-FW_FLAGS := -march=rv32im_zicsr -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles \
+FW_FLAGS := -march=rv32im_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles \
             $(FW_OPT) -g3 -gdwarf-4 -fno-omit-frame-pointer -T fw/link.ld
 
 RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
@@ -26,11 +26,27 @@ RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
        src/debug/riscv_debug_dm.v src/board/clk_pll.v src/board/top.v \
        src/board/seg_display.v src/periph/sram_async.v
 
-.PHONY: all sim sim-unit sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top sim-sram jtag-smoke bscan-smoke openocd-probe openocd-load gdb-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
+.PHONY: all sim sim-unit sim-privileged sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top sim-sram arch-test jtag-smoke bscan-smoke openocd-probe openocd-load gdb-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
 
 all: sim
 
-sim: sim-unit sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top
+sim: sim-unit sim-privileged sim-m-disabled sim-timer sim-debug-halt sim-jtag sim-top
+
+sim-privileged: build/privileged.vvp
+	$(VVP) build/privileged.vvp
+
+build/privileged.vvp: src/core/rv32i_core.v src/core/rv32m_pcpi.v sim/tb_privileged.v | build
+	$(IVERILOG) -g2012 -s tb_privileged -o $@ src/core/rv32i_core.v src/core/rv32m_pcpi.v sim/tb_privileged.v
+
+# 运行 ACT4 生成的自检 ELF.示例:
+# make arch-test ACT_ELF_DIR=/path/to/work/rvhello/elfs
+arch-test: build/arch.vvp
+	@test -n "$(ACT_ELF_DIR)" || { echo "请设置 ACT_ELF_DIR 指向 ACT4 elfs 目录"; exit 2; }
+	python3 script/run_arch_tests.py "$(ACT_ELF_DIR)" --vvp-image $< \
+		--objcopy "$(RISCV_OBJCOPY)" --vvp "$(VVP)"
+
+build/arch.vvp: src/core/rv32i_core.v src/core/rv32m_pcpi.v sim/tb_arch.v | build
+	$(IVERILOG) -g2012 -s tb_arch -o $@ src/core/rv32i_core.v src/core/rv32m_pcpi.v sim/tb_arch.v
 
 sim-debug-halt: build/debug_halt.vvp
 	$(VVP) build/debug_halt.vvp

@@ -1,0 +1,9 @@
+name: rvhello-rv32im
+compiler_exe: riscv-none-elf-gcc
+objdump_exe: riscv-none-elf-objdump
+ref_model_exe: sail_riscv_sim
+udb_config: rvhello.yaml
+linker_script: link.ld
+dut_include_dir: .
+include_priv_tests: true
+

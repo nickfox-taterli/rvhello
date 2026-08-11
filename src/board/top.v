@@ -60,6 +60,7 @@ module soc #(
   wire        mem_valid;
   wire        mem_instr;
   wire        mem_ready;
+  wire        mem_error;
   wire [31:0] mem_addr;
   wire [31:0] mem_wdata;
   wire [31:0] mem_rdata;
@@ -67,6 +68,7 @@ module soc #(
   wire        cpu_mem_valid;
   wire        cpu_mem_instr;
   wire        cpu_mem_ready;
+  wire        cpu_mem_error;
   wire [31:0] cpu_mem_addr;
   wire [31:0] cpu_mem_wdata;
   wire [31:0] cpu_mem_rdata;
@@ -85,6 +87,7 @@ module soc #(
   assign mem_wdata = debug_bus_sel ? dbg_mem_wdata : cpu_mem_wdata;
   assign mem_wstrb = debug_bus_sel ? dbg_mem_wstrb : cpu_mem_wstrb;
   assign cpu_mem_ready = !debug_bus_sel && mem_ready;
+  assign cpu_mem_error = !debug_bus_sel && mem_error;
   assign cpu_mem_rdata = mem_rdata;
   assign dbg_mem_ready = debug_bus_sel && mem_ready;
   assign dbg_mem_rdata = mem_rdata;
@@ -141,6 +144,7 @@ module soc #(
     .mem_valid(cpu_mem_valid),
     .mem_instr(cpu_mem_instr),
     .mem_ready(cpu_mem_ready),
+    .mem_error(cpu_mem_error),
     .mem_addr (cpu_mem_addr),
     .mem_wdata(cpu_mem_wdata),
     .mem_wstrb(cpu_mem_wstrb),
@@ -200,6 +204,7 @@ module soc #(
     .m_wdata      (mem_wdata),
     .m_wstrb      (mem_wstrb),
     .m_ready      (mem_ready),
+    .m_error      (mem_error),
     .m_rdata      (mem_rdata),
     .s_bram_valid (bram_valid),
     .s_bram_ready (bram_ready),

@@ -29,6 +29,7 @@ module tb_m_disabled;
       .mem_valid(mem_valid),
       .mem_instr(),
       .mem_ready(mem_ready),
+      .mem_error(1'b0),
       .mem_addr (mem_addr),
       .mem_wdata(mem_wdata),
       .mem_wstrb(mem_wstrb),
@@ -55,9 +56,9 @@ module tb_m_disabled;
     resetn <= 1'b1;
     wait (trap);
     #1;
-    if (dut.pc !== 32'h0000_0030)
-      $fatal(1, "M disabled trap pc expected 0x30 got %08x", dut.pc);
-    $display("M PCPI DISABLED PASS: M instruction traps at pc=0x30");
+    if (dut.csr_mepc !== 32'h0000_0030 || dut.csr_mcause !== 32'd2)
+      $fatal(1, "M disabled mepc/cause expected 0x30/2 got %08x/%0d", dut.csr_mepc, dut.csr_mcause);
+    $display("M PCPI DISABLED PASS: illegal instruction mepc=0x30");
     $finish;
   end
 

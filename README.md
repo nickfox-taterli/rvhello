@@ -17,7 +17,9 @@ RV32I 单核, 取指与访存共用一组 valid/ready 总线, 经地址译码器
 | 0x1000_0010 | UART TX | 同地址读写分离: 写低字节=发送, 读 bit0=busy |
 | 0x1000_0020 / 24 / 28 | Timer | counter(RO) / compare(RW) / pending(R=状态, W=清除) |
 
-CPU 使用 32 位 IRQ pending 向量,位号直接对应 `mcause`; Timer pending 当前接到 bit 7(MTIP),后续可直接加入软件/外部/平台中断. 核实现 `mstatus`, `mie`, `mtvec`, `mepc`, `mcause`, `mip`, 标准 CSR 指令和 `MRET`; 固件通过中断每 0.5 s 翻转一次 LED, `main.c` 不再包含 MUL 自检.
+CPU 使用 32 位 IRQ pending 向量,位号直接对应 `mcause`; Timer pending 当前接到 bit 7(MTIP),后续可直接加入软件/外部/平台中断.核实现标准机器态异常入口和精确 `mepc`,并提供 `mstatus`, `mie`, `mtvec`, `mscratch`, `mepc`, `mcause`, `mtval`, `mip`,机器 ID 以及 64 位 `mcycle/minstret`.用户别名 `cycle/instret` 为只读,所有 CSR 的 WARL/WPRI 掩码在 RTL 中显式处理.
+
+ECALL,非法指令,指令/Load/Store 地址不对齐以及三类访问错误都会写入 `mcause/mepc/mtval` 后跳到 `mtvec`.WFI 会停止取指直到本地使能的中断待决或调试 halt,FENCE.I 会丢弃取指状态并从下一条指令重新取指.
 
 ## 调试链路
 
@@ -47,13 +49,14 @@ CPU 使用 32 位 IRQ pending 向量,位号直接对应 `mcause`; Timer pending 
 - `src/core/` 核与 BRAM 后端
 - `src/periph/` 地址译码器 + GPIO / UART / Timer
 - `src/board/` 顶层与数码管扫描
-- `fw/` 固件源码 (link.ld / start.S / main.c), `-march=rv32im_zicsr -mabi=ilp32`
+- `fw/` 固件源码 (link.ld / start.S / main.c), `-march=rv32im_zicsr_zifencei -mabi=ilp32`
 - `sim/` 仿真测试台
 
 ## 用法
 
 ```sh
 make sim          # iverilog 单元 + 顶层行为仿真
+make arch-test ACT_ELF_DIR=/path/to/elfs # 批量运行 ACT4 自检 ELF
 make fw           # riscv 工具链编译固件, 刷新 src/program.hex
 make bitstream    # Vivado 综合并实现, 生成 bitstream
 make program      # 下载到 FPGA
@@ -65,6 +68,9 @@ make openocd-load # 通过 OpenOCD 把 build/firmware.elf 写入 BRAM,校验后�
 make gdb-smoke    # GDB 检查寄存器,断点,单步和内存读写
 make clean
 ```
+
+ACT4 的 rvhello 配置和运行说明位于 `sim/act4/`.架构回归目标覆盖
+RV32IM/Zicsr/Zifencei/Zicntr,并由独立测试台收集每个 ELF 的 pass/fail 结果.
 
 `make fw` 需要 riscv 工具链 (PATH 里的 `riscv-none-elf-` 或 `riscv32-unknown-elf-`, 否则回落到 `~/.local/xpack/...`).
 固件默认使用 `-Og -g3 -gdwarf-4`,便于 GDB 按源码单步.需要尺寸优化时可执行

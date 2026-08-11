@@ -29,6 +29,7 @@ module tb_rv32i;
       .mem_valid(mem_valid),
       .mem_instr(),
       .mem_ready(mem_ready),
+      .mem_error(1'b0),
       .mem_addr (mem_addr),
       .mem_wdata(mem_wdata),
       .mem_wstrb(mem_wstrb),
@@ -61,7 +62,8 @@ module tb_rv32i;
     wait (trap);
     #1;
 
-    if (pc !== 32'h0000_009c) $fatal(1, "trap pc expected 0x9c got %08x", pc);
+    if (dut.csr_mepc !== 32'h0000_009c || dut.csr_mcause !== 32'd11)
+      $fatal(1, "ECALL trap mepc/cause expected 0x9c/11 got %08x/%0d", dut.csr_mepc, dut.csr_mcause);
     if (dut.regs[1] !== 32'hffff_ffff) $fatal(1, "x1 %08x", dut.regs[1]);
     if (dut.regs[15] !== 32'h0000_0005) $fatal(1, "x15 LW after FENCE %08x", dut.regs[15]);
     if (dut.regs[14] !== 32'h0000_0001) $fatal(1, "x14 branch poison leaked %08x", dut.regs[14]);
@@ -88,7 +90,7 @@ module tb_rv32i;
     if (dut.regs[28] !== 32'h0000_0007) $fatal(1, "x28 REMU 7/0 %08x", dut.regs[28]);
     if (dut.regs[29] !== 32'hffff_fffe) $fatal(1, "x29 DIV -7/3 %08x", dut.regs[29]);
 
-    $display("RV32I+M PCPI PASS: all M instructions, trap@pc=0x9c");
+    $display("RV32I+M PCPI PASS: all M instructions, ECALL mepc=0x9c");
     $finish;
   end
 
