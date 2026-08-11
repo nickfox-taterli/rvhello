@@ -2,40 +2,23 @@ IVERILOG ?= iverilog
 VVP ?= vvp
 VIVADO ?= /home/taterli/tools/Xilinx/Vivado/2024.2/bin/vivado
 JOBS ?= 8
-PORT ?= /dev/ttyACM0
 
-RTL := src/blink.v src/uart_tx.v src/sync_bram.v src/microseq.v src/addi_cpu.v src/seg_display.v src/rv32i_core.v src/top.v
+RTL := src/prog_mem.v src/seg_display.v src/rv32i_core.v src/top.v
 
-.PHONY: all sim sim-unit sim-top create synth impl bitstream program uart-check clean
+.PHONY: all sim sim-unit sim-top create synth impl bitstream program clean
 
 all: sim
 
 sim: sim-unit sim-top
 
-sim-unit: build/blink.vvp build/uart_tx.vvp build/microseq.vvp build/addi_cpu.vvp build/rv32i.vvp
-	$(VVP) build/blink.vvp
-	$(VVP) build/uart_tx.vvp
-	$(VVP) build/microseq.vvp
-	$(VVP) build/addi_cpu.vvp
+sim-unit: build/rv32i.vvp
 	$(VVP) build/rv32i.vvp
 
 sim-top: build/top.vvp
 	$(VVP) build/top.vvp
 
-build/blink.vvp: src/blink.v sim/tb_blink.v | build
-	$(IVERILOG) -g2012 -s tb_blink -o $@ $^
-
-build/uart_tx.vvp: src/uart_tx.v sim/tb_uart_tx.v | build
-	$(IVERILOG) -g2012 -s tb_uart_tx -o $@ $^
-
-build/microseq.vvp: src/sync_bram.v src/microseq.v sim/tb_microseq.v sim/program_sim.hex | build
-	$(IVERILOG) -g2012 -s tb_microseq -o $@ src/sync_bram.v src/microseq.v sim/tb_microseq.v
-
-build/addi_cpu.vvp: src/addi_cpu.v sim/tb_addi_cpu.v | build
-	$(IVERILOG) -g2012 -s tb_addi_cpu -o $@ src/addi_cpu.v sim/tb_addi_cpu.v
-
-build/rv32i.vvp: src/rv32i_core.v src/sync_bram.v sim/tb_rv32i.v src/program.hex | build
-	$(IVERILOG) -g2012 -s tb_rv32i -o $@ src/rv32i_core.v src/sync_bram.v sim/tb_rv32i.v
+build/rv32i.vvp: src/rv32i_core.v src/prog_mem.v sim/tb_rv32i.v src/program.hex | build
+	$(IVERILOG) -g2012 -s tb_rv32i -o $@ src/rv32i_core.v src/prog_mem.v sim/tb_rv32i.v
 
 build/top.vvp: $(RTL) sim/tb_top.v src/program.hex | build
 	$(IVERILOG) -g2012 -s tb_top -o $@ $(RTL) sim/tb_top.v
@@ -48,9 +31,6 @@ create synth impl bitstream:
 
 program:
 	$(VIVADO) -mode batch -source script/vivado_flow.tcl -tclargs program
-
-uart-check:
-	python3 script/uart_check.py --port $(PORT)
 
 clean:
 	rm -rf build rvhello.xpr rvhello.cache rvhello.hw rvhello.ip_user_files rvhello.runs rvhello.sim rvhello.srcs rvhello.gen .Xil xsim.dir

@@ -7,6 +7,7 @@ module tb_rv32i;
   reg        resetn = 0;
   wire       trap;
   wire       mem_valid;
+  wire       mem_ready;
   wire [31:0] mem_addr;
   wire [31:0] mem_wdata;
   wire [31:0] mem_rdata;
@@ -16,20 +17,13 @@ module tb_rv32i;
 
   always #5 clk = ~clk;
 
-  // 复用 sync_bram 做总线存储, 与顶层一致; mem_ready 同样寄存一拍.
-  reg mem_ready_r;
-  always @(posedge clk) begin
-    if (!resetn) mem_ready_r <= 1'b0;
-    else         mem_ready_r <= mem_valid;
-  end
-
   rv32i_core dut (
       .clk      (clk),
       .resetn   (resetn),
       .trap     (trap),
       .mem_valid(mem_valid),
       .mem_instr(),
-      .mem_ready(mem_ready_r),
+      .mem_ready(mem_ready),
       .mem_addr (mem_addr),
       .mem_wdata(mem_wdata),
       .mem_wstrb(mem_wstrb),
@@ -38,16 +32,18 @@ module tb_rv32i;
       .pc       (pc)
   );
 
-  sync_bram #(
+  // 复用 prog_mem 做总线存储, 与顶层一致.
+  prog_mem #(
       .WORDS  (1024),
       .MEMFILE("src/program.hex")
   ) mem (
-      .clk  (clk),
-      .en   (mem_valid),
-      .we   (mem_wstrb),
-      .addr (mem_addr[11:2]),
-      .wdata(mem_wdata),
-      .rdata(mem_rdata)
+      .clk       (clk),
+      .mem_valid (mem_valid),
+      .mem_addr  (mem_addr),
+      .mem_wdata (mem_wdata),
+      .mem_wstrb (mem_wstrb),
+      .mem_ready (mem_ready),
+      .mem_rdata (mem_rdata)
   );
 
   initial begin
