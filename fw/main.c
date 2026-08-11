@@ -32,11 +32,68 @@ static void uart_putc(char character)
     UART_DATA = (unsigned char)character;
 }
 
+// M 扩展第一版是 32 拍迭代器. 这里强制发出 4 条乘法指令, 既验证指令译码,
+// 也验证完整 64 位积的三种高半积 signedness.
+static unsigned int rv32_mul(unsigned int a, unsigned int b)
+{
+    unsigned int result;
+    __asm__ volatile (".insn r 0x33, 0, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static unsigned int rv32_mulh(unsigned int a, unsigned int b)
+{
+    unsigned int result;
+    __asm__ volatile (".insn r 0x33, 1, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static unsigned int rv32_mulhsu(unsigned int a, unsigned int b)
+{
+    unsigned int result;
+    __asm__ volatile (".insn r 0x33, 2, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static unsigned int rv32_mulhu(unsigned int a, unsigned int b)
+{
+    unsigned int result;
+    __asm__ volatile (".insn r 0x33, 3, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
+    return result;
+}
+
+static int mul_self_test(void)
+{
+    const unsigned int minus_one = 0xffffffffu;
+    const unsigned int int_min = 0x80000000u;
+
+    if (rv32_mul(0u, 1u) != 0u) return 0;
+    if (rv32_mul(minus_one, 1u) != minus_one) return 0;
+    if (rv32_mulh(minus_one, minus_one) != 0u) return 0;
+    if (rv32_mulh(minus_one, 1u) != minus_one) return 0;
+    if (rv32_mulhsu(minus_one, minus_one) != minus_one) return 0;
+    if (rv32_mulhu(minus_one, minus_one) != 0xfffffffeu) return 0;
+    if (rv32_mul(int_min, int_min) != 0u) return 0;
+    if (rv32_mulh(int_min, int_min) != 0x40000000u) return 0;
+    if (rv32_mulhsu(int_min, minus_one) != int_min) return 0;
+    if (rv32_mulhu(int_min, minus_one) != 0x7fffffffu) return 0;
+    return 1;
+}
+
 int main(void)
 {
     // 第一个可见里程碑: 用自定义指令 GPO.WR 点亮 LED bit 0 (不走标准 SW),
     // 然后用 UART 打个招呼.
     gpo_wr(1);
+    if (!mul_self_test()) {
+        gpo_wr(0x81u);
+        uart_putc('M');
+        uart_putc('!');
+        uart_putc('\n');
+        for (;;) {
+            // 乘法自检失败后保持错误码, 方便实板直接识别.
+        }
+    }
     uart_putc('O');
     uart_putc('K');
     uart_putc('\n');
