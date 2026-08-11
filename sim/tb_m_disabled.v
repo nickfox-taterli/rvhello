@@ -19,6 +19,7 @@ module tb_m_disabled;
   ) dut (
       .clk      (clk),
       .resetn   (resetn),
+      .irq_pending(32'd0),
       .trap     (trap),
       .mem_valid(mem_valid),
       .mem_instr(),

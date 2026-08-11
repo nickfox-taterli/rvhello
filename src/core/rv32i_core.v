@@ -17,6 +17,8 @@ module rv32i_core #(
 ) (
     input  wire        clk,
     input  wire        resetn,
+    // irq_pending[n] 对应 mcause=n,方便后续直接扩展软件/定时器/外部 IRQ.
+    input  wire [31:0] irq_pending,
     output reg         trap,
 
     output reg         mem_valid,
@@ -39,6 +41,35 @@ module rv32i_core #(
 
   reg  [2:0]  state;
   reg  [31:0] ir;
+
+  // 机器模式中断实现标准 CSR,中断位号直接使用 mcause 编号.
+  reg  [31:0] csr_mstatus;
+  reg  [31:0] csr_mie;
+  reg  [31:0] csr_mtvec;
+  reg  [31:0] csr_mepc;
+  reg  [31:0] csr_mcause;
+
+  reg         irq_any;
+  reg  [4:0]  irq_cause;
+  integer     irq_index;
+
+  // 多个 IRQ 同拍到达时选择编号较大的一个. 当前标准外部中断 11 因此优先于
+  // 定时器 7 和软件中断 3,未来加入 16-31 的平台中断也不需要再改状态机.
+  always @* begin
+    irq_any   = 1'b0;
+    irq_cause = 5'd0;
+    for (irq_index = 0; irq_index < 32; irq_index = irq_index + 1) begin
+      if (irq_pending[irq_index] && csr_mie[irq_index]) begin
+        irq_any   = 1'b1;
+        irq_cause = irq_index[4:0];
+      end
+    end
+  end
+
+  wire interrupt_enabled = csr_mstatus[3] && irq_any;
+  wire [31:0] interrupt_pc = (csr_mtvec[1:0] == 2'b01) ?
+                             ({csr_mtvec[31:2], 2'b00} + {25'd0, irq_cause, 2'b00}) :
+                             {csr_mtvec[31:2], 2'b00};
 
   // 双异步读口, 同步写口. x0 通过读旁路固定为零, 不依赖数组单元内容.
   reg  [31:0] regs [0:31];
@@ -76,11 +107,34 @@ module rv32i_core #(
   reg        decoded_start_mem;
   reg        decoded_is_load;
   reg        decoded_start_pcpi;
+  reg        decoded_csr_write;
+  reg        decoded_mret;
   reg [31:0] decoded_result;
   reg [31:0] decoded_next_pc;
   reg [31:0] decoded_address;
   reg [31:0] decoded_store_data;
   reg [ 3:0] decoded_store_strobe;
+  reg [11:0] decoded_csr_addr;
+  reg [31:0] decoded_csr_wdata;
+
+  reg        csr_addr_legal;
+  reg [31:0] csr_rdata;
+
+  always @* begin
+    csr_addr_legal = 1'b1;
+    case (ir[31:20])
+      12'h300: csr_rdata = csr_mstatus;
+      12'h304: csr_rdata = csr_mie;
+      12'h305: csr_rdata = csr_mtvec;
+      12'h341: csr_rdata = csr_mepc;
+      12'h342: csr_rdata = csr_mcause;
+      12'h344: csr_rdata = irq_pending;
+      default: begin
+        csr_rdata      = 32'd0;
+        csr_addr_legal = 1'b0;
+      end
+    endcase
+  end
 
   always @* begin
     // 每条路径先给安全默认值, 避免组合 always 推断锁存器.
@@ -89,11 +143,15 @@ module rv32i_core #(
     decoded_start_mem    = 1'b0;
     decoded_is_load      = 1'b0;
     decoded_start_pcpi   = 1'b0;
+    decoded_csr_write    = 1'b0;
+    decoded_mret         = 1'b0;
     decoded_result       = 32'd0;
     decoded_next_pc      = pc + 32'd4;
     decoded_address      = 32'd0;
     decoded_store_data   = rs2_value;
     decoded_store_strobe = 4'b0000;
+    decoded_csr_addr     = ir[31:20];
+    decoded_csr_wdata    = 32'd0;
 
     case (opcode)
       7'b0110111: begin  // LUI
@@ -248,9 +306,52 @@ module rv32i_core #(
         end
       end
 
-      // ECALL/EBREAK/其余 SYSTEM (1110011) 尚无特权架构, 由下面的 default 统一触发 trap.
+      7'b1110011: begin  // SYSTEM: 机器模式 CSR, MRET 和 WFI
+        if (funct3 == 3'b000) begin
+          // MRET 恢复中断前 PC; WFI 在这个小核里允许当 NOP 使用.
+          if ((ir[31:20] == 12'h302) && (rs1 == 5'd0) && (rd == 5'd0)) begin
+            decoded_mret = 1'b1;
+          end else if ((ir[31:20] == 12'h105) && (rs1 == 5'd0) && (rd == 5'd0)) begin
+            decoded_next_pc = pc + 32'd4;
+          end else begin
+            decoded_legal = 1'b0;
+          end
+        end else if (csr_addr_legal) begin
+          decoded_result   = csr_rdata;
+          decoded_write_rd = 1'b1;
+          case (funct3)
+            3'b001: begin  // CSRRW
+              decoded_csr_write = 1'b1;
+              decoded_csr_wdata = rs1_value;
+            end
+            3'b010: begin  // CSRRS
+              decoded_csr_write = (rs1 != 5'd0);
+              decoded_csr_wdata = csr_rdata | rs1_value;
+            end
+            3'b011: begin  // CSRRC
+              decoded_csr_write = (rs1 != 5'd0);
+              decoded_csr_wdata = csr_rdata & ~rs1_value;
+            end
+            3'b101: begin  // CSRRWI
+              decoded_csr_write = 1'b1;
+              decoded_csr_wdata = {27'd0, rs1};
+            end
+            3'b110: begin  // CSRRSI
+              decoded_csr_write = (rs1 != 5'd0);
+              decoded_csr_wdata = csr_rdata | {27'd0, rs1};
+            end
+            3'b111: begin  // CSRRCI
+              decoded_csr_write = (rs1 != 5'd0);
+              decoded_csr_wdata = csr_rdata & ~{27'd0, rs1};
+            end
+            default: decoded_legal = 1'b0;
+          endcase
+        end else begin
+          decoded_legal = 1'b0;
+        end
+      end
 
-      default: decoded_legal = 1'b0;  // 其余 opcode (含 ECALL/EBREAK/SYSTEM) 尚未实现
+      default: decoded_legal = 1'b0;
     endcase
   end
 
@@ -323,18 +424,30 @@ module rv32i_core #(
       load_funct3  <= 3'd0;
       load_lane    <= 2'd0;
       pending_load <= 1'b0;
+      csr_mstatus  <= 32'd0;
+      csr_mie      <= 32'd0;
+      csr_mtvec    <= 32'd0;
+      csr_mepc     <= 32'd0;
+      csr_mcause   <= 32'd0;
       // 不复位通用寄存器, x0 的读旁路始终返回零.
     end else begin
       case (state)
         S_FETCH: begin
-          // 第一次进入时发请求; 等待期间不改地址, 直到 ready 完成传输.
-          if (!mem_valid) begin
+          // 中断只在指令边界采样. 已经预取的指令可以丢弃, mepc 指向尚未执行的 PC.
+          if (interrupt_enabled) begin
+            csr_mepc         <= {pc[31:2], 2'b00};
+            csr_mcause       <= {1'b1, 26'd0, irq_cause};
+            csr_mstatus[7]   <= csr_mstatus[3];
+            csr_mstatus[3]   <= 1'b0;
+            csr_mstatus[12:11] <= 2'b11;
+            pc               <= interrupt_pc;
+            mem_valid        <= 1'b0;
+          end else if (!mem_valid) begin
             mem_valid <= 1'b1;
             mem_instr <= 1'b1;
             mem_addr  <= pc;
             mem_wstrb <= 4'b0000;
-          end
-          if (mem_valid && mem_ready) begin
+          end else if (mem_ready) begin
             mem_valid <= 1'b0;
             ir        <= mem_rdata;
             state     <= S_EXEC;
@@ -350,6 +463,17 @@ module rv32i_core #(
             // 无 C 扩展, 控制流目标必须 4 字节对齐, 否则视为非法.
             trap  <= 1'b1;
             state <= S_TRAP;
+          end else if (decoded_mret) begin
+            pc                 <= csr_mepc;
+            csr_mstatus[3]     <= csr_mstatus[7];
+            csr_mstatus[7]     <= 1'b1;
+            csr_mstatus[12:11] <= 2'b00;
+            retire             <= 1'b1;
+            mem_valid          <= 1'b1;
+            mem_instr          <= 1'b1;
+            mem_addr           <= csr_mepc;
+            mem_wstrb          <= 4'b0000;
+            state              <= S_FETCH;
           end else if (decoded_start_mem) begin
             // 一次性锁存完整访存请求; S_MEM 无论等待多久都不会重新译码.
             mem_valid    <= 1'b1;
@@ -368,6 +492,17 @@ module rv32i_core #(
           end else begin
             if (decoded_write_rd && rd != 5'd0)
               regs[rd] <= decoded_result;
+            if (decoded_csr_write) begin
+              case (decoded_csr_addr)
+                12'h300: csr_mstatus <= decoded_csr_wdata & 32'h0000_1888;
+                12'h304: csr_mie     <= decoded_csr_wdata;
+                12'h305: csr_mtvec   <= {decoded_csr_wdata[31:2],
+                                         (decoded_csr_wdata[1:0] == 2'b01) ? 2'b01 : 2'b00};
+                12'h341: csr_mepc    <= {decoded_csr_wdata[31:2], 2'b00};
+                12'h342: csr_mcause  <= decoded_csr_wdata;
+                default: begin end  // mip 的 MTIP 来自硬件, 软件写入不改变它.
+              endcase
+            end
             pc     <= decoded_next_pc;
             retire <= 1'b1;
             mem_valid <= 1'b1;

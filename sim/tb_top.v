@@ -1,9 +1,6 @@
 `timescale 1ns / 1ps
 
-// SoC 顶层仿真: 跑 fw/main.c 固件, 验收两件事:
-//   1) UART 串口线 uart_tx 上还原出 'O','K','\n' 三个字节;
-//   2) main 第一条 GPIO=1 真的落到总线 (抓写握手).
-// 仿真把 UART_BAUD 提到 CLOCK_HZ/20 (每 bit 20 拍), 加速发送, 否则要等上万时钟.
+// SoC 顶层仿真: 跑固件并把首次定时器比较提前,验证 MTIP 进入 ISR 后翻转 LED.
 module tb_top;
   localparam integer CLOCK_HZ     = 50_000_000;
   localparam integer REFRESH_HZ   = 8_000_000;
@@ -34,62 +31,18 @@ module tb_top;
     .uart_tx  (uart_tx)
   );
 
-  // 仿真 UART 接收机: 在 uart_tx 上按 CB 拍采一位, 还原字节 (LSB 先发).
-  integer   bit_timer;
-  reg [3:0] bit_idx;       // 0=start 中点待确认, 1..8=data, 9=stop
-  reg [7:0] rx_shift;
-  reg       rx_busy;
-  integer   got_n;
-  reg [7:0] got [0:7];
+  reg [31:0] gpio_value [0:1];
+  integer    gpio_writes;
 
   initial begin
-    rx_busy = 1'b0; bit_idx = 4'd0; bit_timer = 0; rx_shift = 8'd0; got_n = 0;
+    gpio_writes = 0;
   end
 
+  // 第一次写来自 main 初始化,第二次写必须来自中断处理函数.
   always @(posedge clk) begin
-    if (!rx_busy) begin
-      if (uart_tx === 1'b0) begin            // 检测到 start 位 (idle 为高)
-        rx_busy   <= 1'b1;
-        bit_timer <= CB/2;                   // 走到 start 中点再确认
-        bit_idx   <= 4'd0;
-        rx_shift  <= 8'd0;
-      end
-    end else begin
-      if (bit_timer > 1) begin
-        bit_timer <= bit_timer - 1;
-      end else begin
-        if (bit_idx == 4'd0) begin
-          bit_timer <= CB;                   // start 确认, 准备采 bit0
-          bit_idx   <= 4'd1;
-        end else if (bit_idx <= 4'd8) begin
-          rx_shift  <= {uart_tx, rx_shift[7:1]};   // 先发的低位右移到低位
-          bit_timer <= CB;
-          bit_idx   <= bit_idx + 4'd1;
-        end else begin
-          got[got_n] <= rx_shift;            // bit_idx==9: stop 位, 收一个字节
-          got_n      <= got_n + 1;
-          rx_busy    <= 1'b0;
-        end
-      end
-    end
-  end
-
-  // GPIO 首写监视: 复位后第一次 GPIO 写握手抓 wdata, 期望 main 第一条 GPIO=1.
-  reg [31:0] gpio_first;
-  reg        gpio_seen;
-
-  initial begin
-    gpio_seen = 1'b0; gpio_first = 32'd0;
-  end
-
-  // 第一次 GPIO 写握手: 抓 wdata, 并确认它来自 GPO.WR (custom-0, ir.opcode=0x0b)
-  // 而非普通 SW -- 这条断言就是 GPO.WR 译码走通的直接证据.
-  always @(posedge clk) begin
-    if (rst_n && !gpio_seen && dut.impl.gpio_valid && dut.impl.gpio_ready && (|dut.impl.mem_wstrb)) begin
-      gpio_first <= dut.impl.mem_wdata;
-      gpio_seen  <= 1'b1;
-      if (dut.impl.cpu.ir[6:0] !== 7'b0001011)
-        $fatal(1, "首次 GPIO 写应来自 GPO.WR(custom-0 0x0b), 实际 ir.opcode=%07b", dut.impl.cpu.ir[6:0]);
+    if (rst_n && dut.impl.gpio_valid && dut.impl.gpio_ready && (|dut.impl.mem_wstrb)) begin
+      if (gpio_writes < 2) gpio_value[gpio_writes] <= dut.impl.mem_wdata;
+      gpio_writes <= gpio_writes + 1;
     end
   end
 
@@ -100,20 +53,42 @@ module tb_top;
     repeat (2) @(posedge clk);
     rst_n <= 1;
 
-    wait (got_n == 3);
+    // 等固件写完 CSR,再把硬件 compare 拉近,不用仿真 50M 个时钟周期.
+    wait (dut.impl.cpu.csr_mstatus[3] && dut.impl.cpu.csr_mie[7]);
+    @(negedge dut.impl.cpu_clk);
+    dut.impl.timer_inst.compare = dut.impl.timer_inst.counter + 32'd20;
 
-    if (got[0] !== 8'h4F) $fatal(1, "byte0 预期 'O'(4f) 得 %02x", got[0]);
-    if (got[1] !== 8'h4B) $fatal(1, "byte1 预期 'K'(4b) 得 %02x", got[1]);
-    if (got[2] !== 8'h0A) $fatal(1, "byte2 预期 '\\n'(0a) 得 %02x", got[2]);
-    if (!gpio_seen)           $fatal(1, "未观察到 GPIO 写");
-    if (gpio_first !== 32'd1) $fatal(1, "GPIO 首写预期 1 得 %08x", gpio_first);
+    wait (gpio_writes >= 2);
+    wait (dut.impl.cpu.csr_mstatus[3]);
+    #1;
 
-    $display("TOP PASS: UART=\"OK\\n\", GPIO first=%0d", gpio_first);
+    if (gpio_value[0] !== 32'h0000_0000)
+      $fatal(1, "GPIO 初始化预期 0 得 %08x", gpio_value[0]);
+    if (gpio_value[1] !== 32'h0000_00ff)
+      $fatal(1, "定时器 ISR 应把 GPIO 翻转为 ff 得 %08x", gpio_value[1]);
+    if (dut.impl.cpu.csr_mcause !== 32'h8000_0007)
+      $fatal(1, "mcause 应为 machine timer interrupt 得 %08x", dut.impl.cpu.csr_mcause);
+    if (dut.impl.cpu.csr_mepc[1:0] !== 2'b00)
+      $fatal(1, "mepc 未按指令对齐 %08x", dut.impl.cpu.csr_mepc);
+
+    // 同时送入 bit 11 和 bit 7,确认通用 IRQ 向量会选择较高编号的外部中断.
+    @(negedge dut.impl.cpu_clk);
+    dut.impl.cpu.csr_mie[11] = 1'b1;
+    force dut.impl.irq_pending = 32'h0000_0880;
+    wait (dut.impl.cpu.csr_mcause == 32'h8000_000b);
+    release dut.impl.irq_pending;
+    wait (dut.impl.cpu.csr_mstatus[3]);
+    #1;
+    if (dut.impl.cpu.csr_mcause !== 32'h8000_000b)
+      $fatal(1, "多 IRQ 优先级预期 cause 11 得 %08x", dut.impl.cpu.csr_mcause);
+
+    $display("TOP IRQ PASS: priority cause=%08x, GPIO %02x->%02x, MRET restored MIE",
+             dut.impl.cpu.csr_mcause, gpio_value[0], gpio_value[1]);
     $finish;
   end
 
   initial begin
     #500000;
-    $fatal(1, "tb_top watchdog timeout (got_n=%0d)", got_n);
+    $fatal(1, "tb_top watchdog timeout (gpio_writes=%0d)", gpio_writes);
   end
 endmodule

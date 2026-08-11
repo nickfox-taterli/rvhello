@@ -66,6 +66,9 @@ module soc #(
   wire [31:0] gpio_out;
   wire        timer_pending;
 
+  // 中断线
+  wire [31:0] irq_pending = {24'd0, timer_pending, 7'd0};
+
   clk_pll #(
     .CPU_HZ_MHZ(CPU_HZ_MHZ)
   ) pll (
@@ -81,6 +84,7 @@ module soc #(
   ) cpu (
     .clk      (cpu_clk),
     .resetn   (cpu_rstn),
+    .irq_pending(irq_pending),
     .trap     (trap),
     .mem_valid(mem_valid),
     .mem_instr(mem_instr),
@@ -206,7 +210,7 @@ module soc #(
     .seg_digit(seg_digit)
   );
 
-  // 板载 LED 为低电平点亮. timer_pending 暂时只内部观测.
+  // 板载 LED 为低电平点亮. timer_pending 已接到 CPU 的 MTIP 输入.
   assign led = trap ? 8'h00 : ~gpio_out[7:0];
 endmodule
 

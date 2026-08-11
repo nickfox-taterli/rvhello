@@ -6,7 +6,7 @@
 //   0x...24 (2'b01) compare  RW  阈值, 复位为全 1 (默认不命中)
 //   0x...28 (2'b10) pending  R=状态; W(有 wstrb)=清除
 // pending 置位用"上一拍稳定的 counter/compare"判定: counter==compare 那拍把它锁高,
-// 这样两边都在变也不会漏掉命中. pending 暂不接 IRQ, 软件可轮询; 下一章再接中断.
+// 这样两边都在变也不会漏掉命中. pending 直接作为 CPU 的机器定时器中断输入.
 module timer (
   input  wire        clk,
   input  wire        resetn,

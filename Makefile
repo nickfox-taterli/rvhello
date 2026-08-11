@@ -13,7 +13,7 @@ endif
 RISCV_GCC     := $(RISCV_PREFIX)gcc
 RISCV_OBJCOPY := $(RISCV_PREFIX)objcopy
 RISCV_OBJDUMP := $(RISCV_PREFIX)objdump
-FW_FLAGS := -march=rv32im -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles -Os -T fw/link.ld
+FW_FLAGS := -march=rv32im_zicsr -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles -Os -T fw/link.ld
 
 RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
        src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v \

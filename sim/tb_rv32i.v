@@ -19,6 +19,7 @@ module tb_rv32i;
   rv32i_core dut (
       .clk      (clk),
       .resetn   (resetn),
+      .irq_pending(32'd0),
       .trap     (trap),
       .mem_valid(mem_valid),
       .mem_instr(),
