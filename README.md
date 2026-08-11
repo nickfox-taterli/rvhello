@@ -13,6 +13,12 @@ RV32I 单核, 取指与访存共用一组 valid/ready 总线, 经地址译码器
 | 0x1000_0010 | UART TX | 同地址读写分离: 写低字节=发送, 读 bit0=busy |
 | 0x1000_0020 / 24 / 28 | Timer | counter(RO) / compare(RW) / pending(R=状态, W=清除) |
 
+## 自定义指令 GPO.WR
+
+`GPO.WR rs1` (custom-0, opcode 0x0b) 
+
+编码 (R 型): `funct7=0 | rs2=0 | rs1 | funct3=0 | rd=0 | opcode=0001011`.
+
 ## 目录
 
 - `src/core/` 核与 BRAM 后端

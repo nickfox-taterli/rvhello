@@ -210,6 +210,21 @@ module rv32i_core #(
         if (funct3 != 3'b000) decoded_legal = 1'b0;
       end
 
+      7'b0001011: begin  // CUSTOM-0: GPO.WR rs1 -> 把 rs1 直接送总线写到 GPIO (0x1000_0000)
+        // 固定字段 (funct7/funct3/rd/rs2 全 0) 锁死语义, 留出空间给未来子操作;
+        // 不冒充任何标准 RV32I 指令. 仍走 S_MEM 握手, 故 CPU 与外设解耦,
+        // 也支持精确异常/单步 (指令在写握手完成后才退休).
+        if ((funct7 == 7'b0000000) && (funct3 == 3'b000) &&
+            (rd == 5'd0) && (rs2 == 5'd0)) begin
+          decoded_address      = 32'h1000_0000;
+          decoded_start_mem    = 1'b1;
+          decoded_store_strobe = 4'b1111;
+          decoded_store_data   = rs1_value;   // rs1 的 32 位值就是 GPIO 输出
+        end else begin
+          decoded_legal        = 1'b0;        // 字段不符 -> 非法编码, trap
+        end
+      end
+
       // ECALL/EBREAK/其余 SYSTEM (1110011) 尚无特权架构, 由下面的 default 统一触发 trap.
 
       default: decoded_legal = 1'b0;  // 其余 opcode (含 ECALL/EBREAK/SYSTEM) 尚未实现
