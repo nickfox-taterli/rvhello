@@ -1,6 +1,7 @@
 `default_nettype none
 
-// 第5阶段实现 => 之前已经完成的内容 + 无条件跳转与链接 (JAL/JALR)
+// 第6阶段实现 => 之前已经完成的内容 + Load/Store (LB/LH/LW/LBU/LHU, SB/SH/SW)
+// 取指与访存共用同一组总线握手; 引入 S_MEM 状态等待数据返回.
 
 // | 格式 | 主要用途 | 典型指令 |
 // | R 型 | 寄存器-寄存器 ALU | ADD, SUB, AND, OR, SLT |
@@ -30,6 +31,7 @@ module rv32i_core #(
 );
   localparam [1:0] S_FETCH = 2'd0;
   localparam [1:0] S_EXEC  = 2'd1;
+  localparam [1:0] S_MEM   = 2'd2;
   localparam [1:0] S_TRAP  = 2'd3;
 
   reg  [1:0]  state;
@@ -51,8 +53,9 @@ module rv32i_core #(
   wire [31:0] rs1_value = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
   wire [31:0] rs2_value = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
 
-  // 用到的立即数: I/U/B/J 型 (移位 shamt 取 ir[24:20], 不走立即数重排).
+  // 用到的立即数: I/S/B/U/J 型 (移位 shamt 取 ir[24:20], 不走立即数重排).
   wire [31:0] imm_i = {{20{ir[31]}}, ir[31:20]};
+  wire [31:0] imm_s = {{20{ir[31]}}, ir[31:25], ir[11:7]};
   wire [31:0] imm_u = {ir[31:12], 12'b0};
   wire [4:0]  shamt = ir[24:20];
   wire [31:0] imm_b = {{19{ir[31]}}, ir[31], ir[7], ir[30:25], ir[11:8], 1'b0};
@@ -61,15 +64,25 @@ module rv32i_core #(
   // 组合译码只计算候选动作; 真正改 PC/寄存器/总线的操作集中在时序块.
   reg        decoded_legal;
   reg        decoded_write_rd;
+  reg        decoded_start_mem;
+  reg        decoded_is_load;
   reg [31:0] decoded_result;
-  reg [31:0] decoded_next_pc;  // 默认 pc+4, 分支/跳转命中时改为目标地址
+  reg [31:0] decoded_next_pc;
+  reg [31:0] decoded_address;
+  reg [31:0] decoded_store_data;
+  reg [ 3:0] decoded_store_strobe;
 
   always @* begin
     // 每条路径先给安全默认值, 避免组合 always 推断锁存器.
-    decoded_legal    = 1'b1;
-    decoded_write_rd = 1'b0;
-    decoded_result   = 32'd0;
-    decoded_next_pc  = pc + 32'd4;  // 如果没有分支/跳转, 这是默认.
+    decoded_legal        = 1'b1;
+    decoded_write_rd     = 1'b0;
+    decoded_start_mem    = 1'b0;
+    decoded_is_load      = 1'b0;
+    decoded_result       = 32'd0;
+    decoded_next_pc      = pc + 32'd4;
+    decoded_address      = 32'd0;
+    decoded_store_data   = rs2_value;
+    decoded_store_strobe = 4'b0000;
 
     case (opcode)
       7'b0110111: begin  // LUI
@@ -138,14 +151,14 @@ module rv32i_core #(
       end
 
       7'b1101111: begin  // JAL
-        decoded_result   = pc + 32'd4;   // 链接寄存器 = 返回地址
+        decoded_result   = pc + 32'd4;
         decoded_next_pc  = pc + imm_j;
         decoded_write_rd = 1'b1;
       end
 
       7'b1100111: begin  // JALR
         if (funct3 == 3'b000) begin
-          decoded_result   = pc + 32'd4;  // 链接寄存器 = 返回地址
+          decoded_result   = pc + 32'd4;
           decoded_next_pc  = (rs1_value + imm_i) & 32'hFFFF_FFFE;
           decoded_write_rd = 1'b1;
         end else begin
@@ -153,7 +166,63 @@ module rv32i_core #(
         end
       end
 
+      // 这一次复杂一点,因为可能涉及内存过程,就会置位decoded_start_mem.
+      7'b0000011: begin  // LOAD
+        decoded_address   = rs1_value + imm_i;
+        decoded_start_mem = 1'b1;
+        decoded_is_load   = 1'b1;
+        // 只允许 LB/LH/LW/LBU/LHU; 其余 funct3 非法.
+        if (!((funct3 == 3'b000) || (funct3 == 3'b001) || (funct3 == 3'b010) ||
+              (funct3 == 3'b100) || (funct3 == 3'b101)))
+          decoded_legal = 1'b0;
+        // LH/LHU 要求地址半字对齐 (位 0 = 0).
+        if (((funct3 == 3'b001) || (funct3 == 3'b101)) && decoded_address[0])
+          decoded_legal = 1'b0;
+        // LW 要求地址字对齐 (位 [1:0] = 0).
+        if ((funct3 == 3'b010) && (|decoded_address[1:0]))
+          decoded_legal = 1'b0;
+      end
+
+      7'b0100011: begin  // STORE
+        decoded_address   = rs1_value + imm_s;
+        decoded_start_mem = 1'b1;
+        case (funct3)
+          3'b000: begin  // SB: 低字节复制到 4 个通道, 由 wstrb 选中实际字节.
+            decoded_store_strobe = 4'b0001 << decoded_address[1:0];
+            decoded_store_data   = {4{rs2_value[7:0]}};
+          end
+          3'b001: begin  // SH
+            decoded_store_strobe = decoded_address[1] ? 4'b1100 : 4'b0011;
+            decoded_store_data   = {2{rs2_value[15:0]}};
+            if (decoded_address[0]) decoded_legal = 1'b0;
+          end
+          3'b010: begin  // SW
+            decoded_store_strobe = 4'b1111;
+            decoded_store_data   = rs2_value;
+            if (|decoded_address[1:0]) decoded_legal = 1'b0;
+          end
+          default: decoded_legal = 1'b0;
+        endcase
+      end
+
       default: decoded_legal = 1'b0;  // 其余 opcode 尚未实现
+    endcase
+  end
+
+  // S_MEM 中使用的访存元数据必须提前锁存, 不能依赖下一次可能变化的译码结果.
+  reg  [4:0]  load_rd;
+  reg  [2:0]  load_funct3;
+  reg  [1:0]  load_lane;
+  reg         pending_load;
+  reg  [15:0] selected_halfword;
+
+  // 按字节通道从返回的 32 位数据中切出目标半字 (低 8 位即目标字节).
+  always @* begin
+    case (load_lane)
+      2'd0:    selected_halfword = mem_rdata[15:0];
+      2'd1:    selected_halfword = mem_rdata[23:8];
+      2'd2:    selected_halfword = mem_rdata[31:16];
+      default: selected_halfword = {8'b0, mem_rdata[31:24]};
     endcase
   end
 
@@ -162,15 +231,19 @@ module rv32i_core #(
     retire <= 1'b0;
 
     if (!resetn) begin
-      state     <= S_FETCH;
-      pc        <= RESET_PC;
-      ir        <= 32'd0;
-      trap      <= 1'b0;
-      mem_valid <= 1'b0;
-      mem_instr <= 1'b0;
-      mem_addr  <= 32'd0;
-      mem_wdata <= 32'd0;
-      mem_wstrb <= 4'b0000;
+      state        <= S_FETCH;
+      pc           <= RESET_PC;
+      ir           <= 32'd0;
+      trap         <= 1'b0;
+      mem_valid    <= 1'b0;
+      mem_instr    <= 1'b0;
+      mem_addr     <= 32'd0;
+      mem_wdata    <= 32'd0;
+      mem_wstrb    <= 4'b0000;
+      load_rd      <= 5'd0;
+      load_funct3  <= 3'd0;
+      load_lane    <= 2'd0;
+      pending_load <= 1'b0;
       for (register_index = 0; register_index < 32; register_index = register_index + 1)
         regs[register_index] <= 32'd0;
     end else begin
@@ -196,13 +269,44 @@ module rv32i_core #(
             state <= S_TRAP;
           end else if (((opcode == 7'b1100011) || (opcode == 7'b1101111) ||
                         (opcode == 7'b1100111)) && (|decoded_next_pc[1:0])) begin
-            // 无 C 扩展, 控制流 (分支/JAL/JALR) 目标必须 4 字节对齐, 否则视为非法.
+            // 无 C 扩展, 控制流目标必须 4 字节对齐, 否则视为非法.
             trap  <= 1'b1;
             state <= S_TRAP;
+          end else if (decoded_start_mem) begin
+            // 一次性锁存完整访存请求; S_MEM 无论等待多久都不会重新译码.
+            mem_valid    <= 1'b1;
+            mem_instr    <= 1'b0;
+            mem_addr     <= decoded_address;
+            mem_wdata    <= decoded_store_data;
+            mem_wstrb    <= decoded_is_load ? 4'b0000 : decoded_store_strobe; // 其实这里已经发起了写了,到S_MEM状态等待ready,ready后就完成了写,不需要再发起写了.
+            load_rd      <= rd;
+            load_funct3  <= funct3;
+            load_lane    <= decoded_address[1:0];
+            pending_load <= decoded_is_load;
+            state        <= S_MEM;
           end else begin
             if (decoded_write_rd && rd != 5'd0)
               regs[rd] <= decoded_result;
             pc     <= decoded_next_pc;
+            retire <= 1'b1;
+            state  <= S_FETCH;
+          end
+        end
+
+        S_MEM: begin
+          if (mem_valid && mem_ready) begin
+            mem_valid <= 1'b0;
+            if (pending_load && load_rd != 5'd0) begin
+              case (load_funct3)
+                3'b000: regs[load_rd] <= {{24{selected_halfword[7]}}, selected_halfword[7:0]};   // LB
+                3'b001: regs[load_rd] <= {{16{selected_halfword[15]}}, selected_halfword};      // LH
+                3'b010: regs[load_rd] <= mem_rdata;                                              // LW
+                3'b100: regs[load_rd] <= {24'b0, selected_halfword[7:0]};                        // LBU
+                3'b101: regs[load_rd] <= {16'b0, selected_halfword};                             // LHU
+                default: regs[load_rd] <= regs[load_rd];  // 非法 funct3 已在 EXEC 拒绝.
+              endcase
+            end
+            pc     <= pc + 32'd4;
             retire <= 1'b1;
             state  <= S_FETCH;
           end
