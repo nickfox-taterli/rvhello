@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-// rv32i_core 的 RV32IM 仿真: 保留 FENCE 的访存回归, 并检查 4 条迭代乘法.
+// rv32i_core 的 PCPI 仿真: 保留 FENCE 的访存回归, 并检查 8 条 M 指令.
 module tb_rv32i;
   reg        clk    = 0;
   reg        resetn = 0;
@@ -55,7 +55,7 @@ module tb_rv32i;
     wait (trap);
     #1;
 
-    if (pc !== 32'h0000_0060) $fatal(1, "trap pc expected 0x60 got %08x", pc);
+    if (pc !== 32'h0000_009c) $fatal(1, "trap pc expected 0x9c got %08x", pc);
     if (dut.regs[1] !== 32'hffff_ffff) $fatal(1, "x1 %08x", dut.regs[1]);
     if (dut.regs[15] !== 32'h0000_0005) $fatal(1, "x15 LW after FENCE %08x", dut.regs[15]);
     if (dut.regs[14] !== 32'h0000_0001) $fatal(1, "x14 branch poison leaked %08x", dut.regs[14]);
@@ -70,8 +70,19 @@ module tb_rv32i;
     if (dut.regs[11] !== 32'h4000_0000) $fatal(1, "x11 MULH INT_MIN^2 %08x", dut.regs[11]);
     if (dut.regs[12] !== 32'h8000_0000) $fatal(1, "x12 MULHSU INT_MIN*0xffffffff %08x", dut.regs[12]);
     if (dut.regs[13] !== 32'h7fff_ffff) $fatal(1, "x13 MULHU INT_MIN*0xffffffff %08x", dut.regs[13]);
+    if (dut.regs[18] !== 32'h0000_0002) $fatal(1, "x18 DIV 7/3 %08x", dut.regs[18]);
+    if (dut.regs[19] !== 32'h0000_0002) $fatal(1, "x19 DIVU 7/3 %08x", dut.regs[19]);
+    if (dut.regs[21] !== 32'hffff_ffff) $fatal(1, "x21 REM -7/3 %08x", dut.regs[21]);
+    if (dut.regs[22] !== 32'h0000_0001) $fatal(1, "x22 REMU 7/3 %08x", dut.regs[22]);
+    if (dut.regs[23] !== 32'h8000_0000) $fatal(1, "x23 DIV INT_MIN/-1 %08x", dut.regs[23]);
+    if (dut.regs[24] !== 32'h0000_0000) $fatal(1, "x24 REM INT_MIN/-1 %08x", dut.regs[24]);
+    if (dut.regs[25] !== 32'hffff_ffff) $fatal(1, "x25 DIV 7/0 %08x", dut.regs[25]);
+    if (dut.regs[26] !== 32'hffff_ffff) $fatal(1, "x26 DIVU 7/0 %08x", dut.regs[26]);
+    if (dut.regs[27] !== 32'h0000_0007) $fatal(1, "x27 REM 7/0 %08x", dut.regs[27]);
+    if (dut.regs[28] !== 32'h0000_0007) $fatal(1, "x28 REMU 7/0 %08x", dut.regs[28]);
+    if (dut.regs[29] !== 32'hffff_fffe) $fatal(1, "x29 DIV -7/3 %08x", dut.regs[29]);
 
-    $display("RV32I+MUL PASS: FENCE + MUL/MULH/MULHSU/MULHU, trap@pc=0x60");
+    $display("RV32I+M PCPI PASS: all M instructions, trap@pc=0x9c");
     $finish;
   end
 

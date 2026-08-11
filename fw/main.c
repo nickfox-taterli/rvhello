@@ -32,51 +32,54 @@ static void uart_putc(char character)
     UART_DATA = (unsigned char)character;
 }
 
-// M 扩展第一版是 32 拍迭代器. 这里强制发出 4 条乘法指令, 既验证指令译码,
-// 也验证完整 64 位积的三种高半积 signedness.
-static unsigned int rv32_mul(unsigned int a, unsigned int b)
-{
-    unsigned int result;
-    __asm__ volatile (".insn r 0x33, 0, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-static unsigned int rv32_mulh(unsigned int a, unsigned int b)
-{
-    unsigned int result;
-    __asm__ volatile (".insn r 0x33, 1, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-static unsigned int rv32_mulhsu(unsigned int a, unsigned int b)
-{
-    unsigned int result;
-    __asm__ volatile (".insn r 0x33, 2, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
-static unsigned int rv32_mulhu(unsigned int a, unsigned int b)
-{
-    unsigned int result;
-    __asm__ volatile (".insn r 0x33, 3, 1, %0, %1, %2" : "=r"(result) : "r"(a), "r"(b));
-    return result;
-}
-
 static int mul_self_test(void)
 {
-    const unsigned int minus_one = 0xffffffffu;
-    const unsigned int int_min = 0x80000000u;
+    // volatile 只用于防止固定用例被常量折叠. 每一条断言本身就是待验证的 C 算式.
+    volatile unsigned int a;
+    volatile unsigned int b;
 
-    if (rv32_mul(0u, 1u) != 0u) return 0;
-    if (rv32_mul(minus_one, 1u) != minus_one) return 0;
-    if (rv32_mulh(minus_one, minus_one) != 0u) return 0;
-    if (rv32_mulh(minus_one, 1u) != minus_one) return 0;
-    if (rv32_mulhsu(minus_one, minus_one) != minus_one) return 0;
-    if (rv32_mulhu(minus_one, minus_one) != 0xfffffffeu) return 0;
-    if (rv32_mul(int_min, int_min) != 0u) return 0;
-    if (rv32_mulh(int_min, int_min) != 0x40000000u) return 0;
-    if (rv32_mulhsu(int_min, minus_one) != int_min) return 0;
-    if (rv32_mulhu(int_min, minus_one) != 0x7fffffffu) return 0;
+    a = 0u; b = 1u;
+    if (a * b != 0u) return 0;                                                    // MUL
+    a = 0xffffffffu; b = 1u;
+    if (a * b != 0xffffffffu) return 0;                                           // MUL
+    a = 0xffffffffu; b = 0xffffffffu;
+    if ((unsigned int)(((long long)(int)a * (long long)(int)b) >> 32) != 0u) return 0;  // MULH
+    a = 0xffffffffu; b = 1u;
+    if ((unsigned int)(((long long)(int)a * (long long)(int)b) >> 32) !=
+        0xffffffffu) return 0;                                                    // MULH
+    a = 0xffffffffu; b = 0xffffffffu;
+    if ((unsigned int)(((unsigned long long)((long long)(int)a *
+                                               (unsigned long long)b)) >> 32) !=
+        0xffffffffu) return 0;                                                    // MULHSU
+    if ((unsigned int)(((unsigned long long)a * (unsigned long long)b) >> 32) !=
+        0xfffffffeu) return 0;                                                    // MULHU
+    a = 0x80000000u; b = 0x80000000u;
+    if (a * b != 0u) return 0;                                                     // MUL
+    if ((unsigned int)(((long long)(int)a * (long long)(int)b) >> 32) !=
+        0x40000000u) return 0;                                                    // MULH
+    b = 0xffffffffu;
+    if ((unsigned int)(((unsigned long long)((long long)(int)a *
+                                               (unsigned long long)b)) >> 32) !=
+        0x80000000u) return 0;                                                    // MULHSU
+    if ((unsigned int)(((unsigned long long)a * (unsigned long long)b) >> 32) !=
+        0x7fffffffu) return 0;                                                    // MULHU
+
+    a = 7u; b = 3u;
+    if ((unsigned int)((int)a / (int)b) != 2u) return 0;                          // DIV
+    if (a / b != 2u) return 0;                                                     // DIVU
+    a = 0xfffffff9u;
+    if ((unsigned int)((int)a / (int)b) != 0xfffffffeu) return 0;                 // DIV
+    if ((unsigned int)((int)a % (int)b) != 0xffffffffu) return 0;                 // REM
+    a = 7u;
+    if (a % b != 1u) return 0;                                                     // REMU
+    a = 0x80000000u; b = 0xffffffffu;
+    if ((unsigned int)((int)a / (int)b) != 0x80000000u) return 0;                 // DIV overflow
+    if ((unsigned int)((int)a % (int)b) != 0u) return 0;                          // REM overflow
+    a = 7u; b = 0u;
+    if ((unsigned int)((int)a / (int)b) != 0xffffffffu) return 0;                 // DIV by zero
+    if (a / b != 0xffffffffu) return 0;                                            // DIVU by zero
+    if ((unsigned int)((int)a % (int)b) != 7u) return 0;                          // REM by zero
+    if (a % b != 7u) return 0;                                                     // REMU by zero
     return 1;
 }
 

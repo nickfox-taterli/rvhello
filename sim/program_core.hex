@@ -1,6 +1,6 @@
-// RV32IM 单元测试: 保留访存和 FENCE 冒烟测试, 再覆盖 4 条 M 乘法指令.
-// MUL 迭代器的输入包含 0, 1, -1, 0x80000000, 0xffffffff.
-// 预期由 tb_rv32i 逐项检查, 末尾 ECALL 触发 trap @ PC=0x60.
+// RV32I + M PCPI 单元测试: 保留访存和 FENCE 冒烟测试, 再覆盖 8 条 M 指令.
+// MUL 和 DIV 的输入包含 0, 1, -1, 0x80000000, 0xffffffff.
+// 预期由 tb_rv32i 逐项检查, 末尾 ECALL 触发 trap @ PC=0x9c.
 // 0x00: addi x10,x0,0x100  -> x10 = 0x100
 // 0x04: addi x1,x0,5       -> x1 = 5
 // 0x08: sw   x1,0(x10)     -> mem[0x100] = 5
@@ -10,7 +10,8 @@
 // 0x18: addi x3,x0,99      -> poison (被跳过)
 // 0x1C: addi x3,x0,1       -> x3 = 1
 // 0x20..0x5C: MUL, MULH, MULHSU, MULHU 的符号和高半积测试.
-// 0x60: ECALL (SYSTEM 指令, 本核无特权架构) -> trap @ PC = 0x60
+// 0x60..0x98: DIV, DIVU, REM, REMU 的普通、负数、除零和溢出测试.
+// 0x9C: ECALL (SYSTEM 指令, 本核无特权架构) -> trap @ PC = 0x9C
 10000513
 00500093
 00152023
@@ -35,4 +36,19 @@ fff00093
 029495b3
 0214a633
 0214b6b3
+00700813
+00300893
+03184933
+031859b3
+ff900a13
+031a6ab3
+03187b33
+ff900e93
+031eceb3
+0214cbb3
+0214ec33
+02084cb3
+02085d33
+02086db3
+02087e33
 00000073

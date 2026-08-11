@@ -13,20 +13,26 @@ endif
 RISCV_GCC     := $(RISCV_PREFIX)gcc
 RISCV_OBJCOPY := $(RISCV_PREFIX)objcopy
 RISCV_OBJDUMP := $(RISCV_PREFIX)objdump
-FW_FLAGS := -march=rv32i -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles -Os -T fw/link.ld
+FW_FLAGS := -march=rv32im -mabi=ilp32 -ffreestanding -nostdlib -nostartfiles -Os -T fw/link.ld
 
-RTL := src/core/rv32i_core.v src/core/prog_mem.v \
+RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
        src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v \
        src/board/clk_pll.v src/board/top.v src/board/seg_display.v src/periph/sram_async.v
 
-.PHONY: all sim sim-unit sim-timer sim-top sim-sram fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
+.PHONY: all sim sim-unit sim-m-disabled sim-timer sim-top sim-sram fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
 
 all: sim
 
-sim: sim-unit sim-timer sim-top
+sim: sim-unit sim-m-disabled sim-timer sim-top
 
 sim-unit: build/rv32i.vvp
 	$(VVP) build/rv32i.vvp
+
+sim-m-disabled: build/m_disabled.vvp
+	$(VVP) build/m_disabled.vvp
+
+build/m_disabled.vvp: src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v sim/tb_m_disabled.v sim/program_core.hex | build
+	$(IVERILOG) -g2012 -s tb_m_disabled -o $@ src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v sim/tb_m_disabled.v
 
 sim-timer: build/timer.vvp
 	$(VVP) build/timer.vvp
@@ -43,8 +49,8 @@ sim-sram: build/sram_async.vvp
 build/sram_async.vvp: src/periph/sram_async.v sim/tb_sram_async.v | build
 	$(IVERILOG) -g2012 -s tb_sram_async -o $@ src/periph/sram_async.v sim/tb_sram_async.v
 
-build/rv32i.vvp: src/core/rv32i_core.v src/core/prog_mem.v sim/tb_rv32i.v sim/program_core.hex | build
-	$(IVERILOG) -g2012 -s tb_rv32i -o $@ src/core/rv32i_core.v src/core/prog_mem.v sim/tb_rv32i.v
+build/rv32i.vvp: src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v sim/tb_rv32i.v sim/program_core.hex | build
+	$(IVERILOG) -g2012 -s tb_rv32i -o $@ src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v sim/tb_rv32i.v
 
 build/top.vvp: $(RTL) sim/tb_top.v src/program.hex | build
 	$(IVERILOG) -g2012 -s tb_top -o $@ $(RTL) sim/tb_top.v

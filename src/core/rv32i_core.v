@@ -11,7 +11,9 @@
 // | U 型 | 高位立即数 | LUI, AUIPC |
 // | J 型 | 跳转 | JAL |
 module rv32i_core #(
-    parameter [31:0] RESET_PC = 32'h0000_0000
+    parameter [31:0] RESET_PC = 32'h0000_0000,
+    parameter         ENABLE_M_PCPI = 1'b1,
+    parameter         USE_DSP_MUL   = 1'b1
 ) (
     input  wire        clk,
     input  wire        resetn,
@@ -32,7 +34,7 @@ module rv32i_core #(
   localparam [2:0] S_FETCH = 3'd0;
   localparam [2:0] S_EXEC  = 3'd1;
   localparam [2:0] S_MEM   = 3'd2;
-  localparam [2:0] S_MUL   = 3'd3;
+  localparam [2:0] S_PCPI  = 3'd3;
   localparam [2:0] S_TRAP  = 3'd4;
 
   reg  [2:0]  state;
@@ -73,7 +75,7 @@ module rv32i_core #(
   reg        decoded_write_rd;
   reg        decoded_start_mem;
   reg        decoded_is_load;
-  reg        decoded_start_mul;
+  reg        decoded_start_pcpi;
   reg [31:0] decoded_result;
   reg [31:0] decoded_next_pc;
   reg [31:0] decoded_address;
@@ -86,7 +88,7 @@ module rv32i_core #(
     decoded_write_rd     = 1'b0;
     decoded_start_mem    = 1'b0;
     decoded_is_load      = 1'b0;
-    decoded_start_mul    = 1'b0;
+    decoded_start_pcpi   = 1'b0;
     decoded_result       = 32'd0;
     decoded_next_pc      = pc + 32'd4;
     decoded_address      = 32'd0;
@@ -124,9 +126,13 @@ module rv32i_core #(
 
       7'b0110011: begin  // OP (R 型)
         if (funct7 == 7'b0000001) begin
-          // M 的慢乘法单独进入 S_MUL, 不把 64 位累加路径塞进主 ALU.
+          // M 指令由独立 PCPI 协处理器执行, 主 ALU 不保留慢单元数据通路.
           case (funct3)
-            3'b000, 3'b001, 3'b010, 3'b011: decoded_start_mul = 1'b1;
+            3'b000, 3'b001, 3'b010, 3'b011,
+            3'b100, 3'b101, 3'b110, 3'b111: begin
+              if (ENABLE_M_PCPI) decoded_start_pcpi = 1'b1;
+              else decoded_legal = 1'b0;
+            end
             default: decoded_legal = 1'b0;
           endcase
         end else begin
@@ -255,26 +261,38 @@ module rv32i_core #(
   reg         pending_load;
   reg  [15:0] selected_halfword;
 
-  // 乘法器每拍只做一次可选加法和两次移位. 操作数、目的寄存器和符号在入口锁存,
-  // S_MUL 的 32 拍中不会再依赖译码读口. 0x80000000 的 magnitude 仍是 2^31,
-  // 所以在 32 位无符号移位通路里可以自然表示.
-  reg  [ 4:0] mul_rd;
-  reg  [ 5:0] mul_count;
-  reg         mul_high;
-  reg         mul_negative;
-  reg  [63:0] mul_accumulator;
-  reg  [63:0] mul_multiplicand;
-  reg  [31:0] mul_multiplier;
+  // PCPI 接口让慢单元拥有独立握手. 当前仅内部连接 rv32m_pcpi,
+  // 后续可以不动主核状态机而把这组线引到外部协处理器.
+  wire        pcpi_valid = ENABLE_M_PCPI &&
+                           (((state == S_EXEC) && decoded_start_pcpi) || (state == S_PCPI));
+  wire        pcpi_wait;
+  wire        pcpi_ready;
+  wire        pcpi_wr;
+  wire [31:0] pcpi_rd;
 
-  wire mul_a_is_signed = funct3 != 3'b011;
-  wire mul_b_is_signed = (funct3 == 3'b000) || (funct3 == 3'b001);
-  wire [31:0] mul_abs_a = (mul_a_is_signed && rs1_value[31]) ?
-                        (~rs1_value + 1'b1) : rs1_value;
-  wire [31:0] mul_abs_b = (mul_b_is_signed && rs2_value[31]) ?
-                        (~rs2_value + 1'b1) : rs2_value;
-  wire [63:0] mul_sum = mul_accumulator +
-                        (mul_multiplier[0] ? mul_multiplicand : 64'd0);
-  wire [63:0] mul_signed_result = mul_negative ? (~mul_sum + 1'b1) : mul_sum;
+  generate
+    if (ENABLE_M_PCPI) begin : gen_m_pcpi
+      rv32m_pcpi #(
+          .USE_DSP_MUL(USE_DSP_MUL)
+      ) m_pcpi (
+          .clk       (clk),
+          .resetn    (resetn),
+          .pcpi_valid(pcpi_valid),
+          .pcpi_insn (ir),
+          .pcpi_rs1  (rs1_value),
+          .pcpi_rs2  (rs2_value),
+          .pcpi_wait (pcpi_wait),
+          .pcpi_ready(pcpi_ready),
+          .pcpi_wr   (pcpi_wr),
+          .pcpi_rd   (pcpi_rd)
+      );
+    end else begin : gen_no_m_pcpi
+      assign pcpi_wait  = 1'b0;
+      assign pcpi_ready = 1'b0;
+      assign pcpi_wr    = 1'b0;
+      assign pcpi_rd    = 32'd0;
+    end
+  endgenerate
 
   // 按字节通道从返回的 32 位数据中切出目标半字 (低 8 位即目标字节).
   always @* begin
@@ -305,13 +323,6 @@ module rv32i_core #(
       load_funct3  <= 3'd0;
       load_lane    <= 2'd0;
       pending_load <= 1'b0;
-      mul_rd             <= 5'd0;
-      mul_count          <= 6'd0;
-      mul_high           <= 1'b0;
-      mul_negative       <= 1'b0;
-      mul_accumulator    <= 64'd0;
-      mul_multiplicand   <= 64'd0;
-      mul_multiplier     <= 32'd0;
       // 不复位通用寄存器, x0 的读旁路始终返回零.
     end else begin
       case (state)
@@ -351,17 +362,9 @@ module rv32i_core #(
             load_lane    <= decoded_address[1:0];
             pending_load <= decoded_is_load;
             state        <= S_MEM;
-          end else if (decoded_start_mul) begin
-            // 用绝对值完成无符号 shift-add, 最后再对完整 64 位积恢复符号.
-            mul_rd           <= rd;
-            mul_count        <= 6'd0;
-            mul_high         <= funct3 != 3'b000;
-            mul_negative     <= (mul_a_is_signed && rs1_value[31]) ^
-                                (mul_b_is_signed && rs2_value[31]);
-            mul_accumulator  <= 64'd0;
-            mul_multiplicand <= {32'd0, mul_abs_a};
-            mul_multiplier   <= mul_abs_b;
-            state            <= S_MUL;
+          end else if (decoded_start_pcpi) begin
+            // 发起拍 pcpi_valid=1, 协处理器锁存请求. 后续完成前 PC 和 IR 都保持不动.
+            state <= S_PCPI;
           end else begin
             if (decoded_write_rd && rd != 5'd0)
               regs[rd] <= decoded_result;
@@ -398,14 +401,11 @@ module rv32i_core #(
           end
         end
 
-        // 把二进制乘法展开成N个移位后的被乘数之和,然后逐项累加,转乘法为加法.
-        S_MUL: begin
-          mul_accumulator  <= mul_sum;
-          mul_multiplicand <= mul_multiplicand << 1;
-          mul_multiplier   <= mul_multiplier >> 1;
-          if (mul_count == 6'd31) begin
-            if (mul_rd != 5'd0)
-              regs[mul_rd] <= mul_high ? mul_signed_result[63:32] : mul_signed_result[31:0];
+        S_PCPI: begin
+          // 协处理器给出 ready 后才退休, 这样任意慢单元都不会影响主核提交语义.
+          if (pcpi_ready) begin
+            if (pcpi_wr && rd != 5'd0)
+              regs[rd] <= pcpi_rd;
             pc        <= pc + 32'd4;
             retire    <= 1'b1;
             mem_valid <= 1'b1;
@@ -413,8 +413,6 @@ module rv32i_core #(
             mem_addr  <= pc + 32'd4;
             mem_wstrb <= 4'b0000;
             state     <= S_FETCH;
-          end else begin
-            mul_count <= mul_count + 1'b1;
           end
         end
 
