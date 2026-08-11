@@ -18,7 +18,7 @@ proc ensure_project {{use_sram 0}} {
     set_property target_language Verilog [current_project]
     # clk_pll 的 MMCM 原语只在综合期启用; iverilog 行为仿真走旁路.
     set_property verilog_define [list SYNTHESIS_PLL] [get_filesets sources_1]
-    foreach path {src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v src/periph/plic.v src/periph/sram_async.v src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/bscan_dtm.v src/debug/riscv_debug_dm.v src/board/clk_pll.v src/board/top.v src/board/seg_display.v} {
+    foreach path {src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v src/interconnect/simple_to_wb.v src/interconnect/wb_arbiter.v src/interconnect/wb_to_simple.v src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v src/periph/plic.v src/periph/sram_async.v src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/bscan_dtm.v src/debug/riscv_debug_dm.v src/board/clk_pll.v src/board/top.v src/board/seg_display.v} {
         if {![file exists $path]} { error "Missing file: $path" }
         if {[llength [get_files -quiet $path]] == 0} { add_files -norecurse $path }
     }

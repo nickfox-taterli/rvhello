@@ -58,7 +58,7 @@ module soc #(
   wire        dm_ndmreset;
   wire        hart_resetn = cpu_rstn && !dm_ndmreset;
 
-  // 核和译码器之间的总线.
+  // Wishbone 互连下游仍转回原来的简单总线,外设不需要跟着改协议.
   wire        mem_valid;
   wire        mem_instr;
   wire        mem_ready;
@@ -81,18 +81,36 @@ module soc #(
   wire [31:0] dbg_mem_wdata;
   wire [31:0] dbg_mem_rdata;
   wire [3:0]  dbg_mem_wstrb;
-  wire        debug_bus_sel = dbg_halted && dbg_mem_valid;
-
-  assign mem_valid = debug_bus_sel ? dbg_mem_valid : cpu_mem_valid;
-  assign mem_instr = debug_bus_sel ? 1'b0 : cpu_mem_instr;
-  assign mem_addr  = debug_bus_sel ? dbg_mem_addr : cpu_mem_addr;
-  assign mem_wdata = debug_bus_sel ? dbg_mem_wdata : cpu_mem_wdata;
-  assign mem_wstrb = debug_bus_sel ? dbg_mem_wstrb : cpu_mem_wstrb;
-  assign cpu_mem_ready = !debug_bus_sel && mem_ready;
-  assign cpu_mem_error = !debug_bus_sel && mem_error;
-  assign cpu_mem_rdata = mem_rdata;
-  assign dbg_mem_ready = debug_bus_sel && mem_ready;
-  assign dbg_mem_rdata = mem_rdata;
+  wire        cpu_wb_cyc;
+  wire        cpu_wb_stb;
+  wire        cpu_wb_we;
+  wire [31:0] cpu_wb_adr;
+  wire [31:0] cpu_wb_dat_w;
+  wire [31:0] cpu_wb_dat_r;
+  wire [3:0]  cpu_wb_sel;
+  wire        cpu_wb_tga_instr;
+  wire        cpu_wb_ack;
+  wire        cpu_wb_err;
+  wire        dbg_wb_cyc;
+  wire        dbg_wb_stb;
+  wire        dbg_wb_we;
+  wire [31:0] dbg_wb_adr;
+  wire [31:0] dbg_wb_dat_w;
+  wire [31:0] dbg_wb_dat_r;
+  wire [3:0]  dbg_wb_sel;
+  wire        dbg_wb_tga_instr;
+  wire        dbg_wb_ack;
+  wire        dbg_wb_err;
+  wire        bus_wb_cyc;
+  wire        bus_wb_stb;
+  wire        bus_wb_we;
+  wire [31:0] bus_wb_adr;
+  wire [31:0] bus_wb_dat_w;
+  wire [31:0] bus_wb_dat_r;
+  wire [3:0]  bus_wb_sel;
+  wire        bus_wb_tga_instr;
+  wire        bus_wb_ack;
+  wire        bus_wb_err;
 
   // 各从端独立的 valid/ready/rdata, 由译码器按地址分发.
   wire        bram_valid;
@@ -201,6 +219,59 @@ module soc #(
     .sb_valid(dbg_mem_valid), .sb_addr(dbg_mem_addr),
     .sb_wdata(dbg_mem_wdata), .sb_wstrb(dbg_mem_wstrb),
     .sb_ready(dbg_mem_ready), .sb_rdata(dbg_mem_rdata)
+  );
+
+  simple_to_wb cpu_bus_adapter (
+    .clk(cpu_clk), .resetn(hart_resetn),
+    .s_valid(cpu_mem_valid), .s_instr(cpu_mem_instr),
+    .s_addr(cpu_mem_addr), .s_wdata(cpu_mem_wdata), .s_wstrb(cpu_mem_wstrb),
+    .s_ready(cpu_mem_ready), .s_error(cpu_mem_error), .s_rdata(cpu_mem_rdata),
+    .wb_cyc(cpu_wb_cyc), .wb_stb(cpu_wb_stb), .wb_we(cpu_wb_we),
+    .wb_adr(cpu_wb_adr), .wb_dat_w(cpu_wb_dat_w), .wb_sel(cpu_wb_sel),
+    .wb_tga_instr(cpu_wb_tga_instr), .wb_ack(cpu_wb_ack),
+    .wb_err(cpu_wb_err), .wb_dat_r(cpu_wb_dat_r)
+  );
+
+  // SBA 仍只在 hart 停住时进入系统总线,先保持现有调试一致性约束.
+  simple_to_wb debug_bus_adapter (
+    .clk(cpu_clk), .resetn(cpu_rstn),
+    .s_valid(dbg_halted && dbg_mem_valid), .s_instr(1'b0),
+    .s_addr(dbg_mem_addr), .s_wdata(dbg_mem_wdata), .s_wstrb(dbg_mem_wstrb),
+    .s_ready(dbg_mem_ready), .s_error(), .s_rdata(dbg_mem_rdata),
+    .wb_cyc(dbg_wb_cyc), .wb_stb(dbg_wb_stb), .wb_we(dbg_wb_we),
+    .wb_adr(dbg_wb_adr), .wb_dat_w(dbg_wb_dat_w), .wb_sel(dbg_wb_sel),
+    .wb_tga_instr(dbg_wb_tga_instr), .wb_ack(dbg_wb_ack),
+    .wb_err(dbg_wb_err), .wb_dat_r(dbg_wb_dat_r)
+  );
+
+  wb_arbiter #(
+    .MASTERS(2)
+  ) bus_arbiter (
+    .clk(cpu_clk), .resetn(cpu_rstn),
+    .m_cyc({dbg_wb_cyc, cpu_wb_cyc}),
+    .m_stb({dbg_wb_stb, cpu_wb_stb}),
+    .m_we({dbg_wb_we, cpu_wb_we}),
+    .m_adr({dbg_wb_adr, cpu_wb_adr}),
+    .m_dat_w({dbg_wb_dat_w, cpu_wb_dat_w}),
+    .m_sel({dbg_wb_sel, cpu_wb_sel}),
+    .m_tga_instr({dbg_wb_tga_instr, cpu_wb_tga_instr}),
+    .m_ack({dbg_wb_ack, cpu_wb_ack}),
+    .m_err({dbg_wb_err, cpu_wb_err}),
+    .m_dat_r({dbg_wb_dat_r, cpu_wb_dat_r}),
+    .s_cyc(bus_wb_cyc), .s_stb(bus_wb_stb), .s_we(bus_wb_we),
+    .s_adr(bus_wb_adr), .s_dat_w(bus_wb_dat_w), .s_sel(bus_wb_sel),
+    .s_tga_instr(bus_wb_tga_instr), .s_ack(bus_wb_ack),
+    .s_err(bus_wb_err), .s_dat_r(bus_wb_dat_r)
+  );
+
+  wb_to_simple bus_slave_adapter (
+    .wb_cyc(bus_wb_cyc), .wb_stb(bus_wb_stb), .wb_we(bus_wb_we),
+    .wb_adr(bus_wb_adr), .wb_dat_w(bus_wb_dat_w), .wb_sel(bus_wb_sel),
+    .wb_tga_instr(bus_wb_tga_instr), .wb_ack(bus_wb_ack),
+    .wb_err(bus_wb_err), .wb_dat_r(bus_wb_dat_r),
+    .m_valid(mem_valid), .m_instr(mem_instr), .m_addr(mem_addr),
+    .m_wdata(mem_wdata), .m_wstrb(mem_wstrb), .m_ready(mem_ready),
+    .m_error(mem_error), .m_rdata(mem_rdata)
   );
 
   bus_decode #(

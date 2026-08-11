@@ -4,7 +4,12 @@ PRX100T 开发板, 主芯片 `xc7a100tfgg676-2` 的工程, 做一个小 RISC-V S
 
 ## SoC 结构
 
-RV32I 单核, 取指与访存共用一组 valid/ready 总线, 经地址译码器分发到各个从端. 乘法子集当前实现 MUL, MULH, MULHSU, MULHU:
+RV32I 单核,核内取指与访存暂时共用一组 valid/ready 总线.核心和 Debug SBA
+分别经适配器接入 32 位 Wishbone B4 Classic 互连,再由现有地址译码器分发到各个从端.
+仲裁器使用参数化打包主端数组,扩充主端不需要增加模块端口.当前每个主端只允许一个事务在途,
+高编号主端优先,但不能抢占已经开始的事务;顶层中 Debug 为 M1,CPU 为 M0.
+Wishbone 地址按字节寻址,`TGA[0]` 用作取指标签,未映射访问由 `ERR` 终止.
+乘法子集当前实现 MUL, MULH, MULHSU, MULHU:
 
 - DSP 路径按每种指令的 signedness 扩展两个操作数, 锁存完整 64 位积后取高半或低半.
 - 回退路径按 `multiplier[0]` 做条件累加, 再左移被乘数和右移乘数.
@@ -55,6 +60,7 @@ ECALL,非法指令,指令/Load/Store 地址不对齐以及三类访问错误都�
 ## 目录
 
 - `src/core/` 核与 BRAM 后端
+- `src/interconnect/` Wishbone 适配器与仲裁器
 - `src/periph/` 地址译码器 + GPIO / UART / Timer / PLIC
 - `src/board/` 顶层与数码管扫描
 - `fw/` 固件源码 (link.ld / start.S / main.c), `-march=rv32im_zicsr_zifencei -mabi=ilp32`

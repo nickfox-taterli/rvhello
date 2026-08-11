@@ -21,16 +21,17 @@ FW_FLAGS := -march=rv32im_zicsr_zifencei -mabi=ilp32 -ffreestanding -nostdlib -n
             $(FW_OPT) -g3 -gdwarf-4 -fno-omit-frame-pointer -T fw/link.ld
 
 RTL := src/core/rv32i_core.v src/core/rv32m_pcpi.v src/core/prog_mem.v \
+       src/interconnect/simple_to_wb.v src/interconnect/wb_arbiter.v src/interconnect/wb_to_simple.v \
        src/periph/bus_decode.v src/periph/gpio.v src/periph/uart_tx.v src/periph/timer.v src/periph/plic.v \
        src/debug/jtag_dtm_cdc.v src/debug/jtag_dtm_tap.v src/debug/bscan_dtm.v \
        src/debug/riscv_debug_dm.v src/board/clk_pll.v src/board/top.v \
        src/board/seg_display.v src/periph/sram_async.v
 
-.PHONY: all sim sim-unit sim-privileged sim-m-disabled sim-timer sim-plic sim-debug-halt sim-jtag sim-top sim-sram arch-test jtag-smoke bscan-smoke openocd-probe openocd-load gdb-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
+.PHONY: all sim sim-unit sim-privileged sim-m-disabled sim-timer sim-plic sim-debug-halt sim-jtag sim-wishbone sim-top sim-sram arch-test jtag-smoke bscan-smoke openocd-probe openocd-load gdb-smoke fw create synth impl bitstream program sram-create sram-synth sram-impl sram-bitstream sram-program clean
 
 all: sim
 
-sim: sim-unit sim-privileged sim-m-disabled sim-timer sim-plic sim-debug-halt sim-jtag sim-top
+sim: sim-unit sim-privileged sim-m-disabled sim-timer sim-plic sim-debug-halt sim-jtag sim-wishbone sim-top
 
 sim-privileged: build/privileged.vvp
 	$(VVP) build/privileged.vvp
@@ -56,6 +57,12 @@ build/debug_halt.vvp: src/core/rv32i_core.v src/core/rv32m_pcpi.v sim/tb_debug_h
 
 sim-jtag: build/jtag_dmi.vvp
 	$(VVP) build/jtag_dmi.vvp
+
+sim-wishbone: build/wishbone.vvp
+	$(VVP) build/wishbone.vvp
+
+build/wishbone.vvp: src/interconnect/simple_to_wb.v src/interconnect/wb_arbiter.v src/interconnect/wb_to_simple.v sim/tb_wishbone.v | build
+	$(IVERILOG) -g2012 -s tb_wishbone -o $@ $^
 
 jtag-smoke:
 	python3 script/jtag_smoke.py
