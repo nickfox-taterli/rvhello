@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-// rv32i_core 第 2 阶段仿真: 基础 ALU 与比较. 跑完 14 条后命中 ECALL 触发 trap.
-// 停机时一次性核对全部结果寄存器与 PC.
+// rv32i_core 第 3 阶段仿真: 移位. 跑完 9 条后命中 ECALL 触发 trap.
+// 停机时一次性核对全部结果寄存器与 PC. 重点对照算术移位(保留符号)与逻辑移位(补零).
 module tb_rv32i;
   reg        clk    = 0;
   reg        resetn = 0;
@@ -60,24 +60,19 @@ module tb_rv32i;
     wait (trap);
     #1;
 
-    if (pc !== 32'h0000_0038)
-      $fatal(1, "trap pc expected 0x38 got %08x", pc);
-    if (dut.regs[ 1] !== 32'h0000_0007) $fatal(1, "x1  %08x", dut.regs[ 1]);
-    if (dut.regs[ 2] !== 32'hFFFF_FFFD) $fatal(1, "x2  %08x", dut.regs[ 2]);
-    if (dut.regs[ 3] !== 32'h0000_0004) $fatal(1, "x3  %08x", dut.regs[ 3]);
-    if (dut.regs[ 4] !== 32'h0000_000A) $fatal(1, "x4  %08x", dut.regs[ 4]);
-    if (dut.regs[ 5] !== 32'h0000_0001) $fatal(1, "x5  %08x", dut.regs[ 5]);
-    if (dut.regs[ 6] !== 32'h0000_0000) $fatal(1, "x6  %08x", dut.regs[ 6]);
-    if (dut.regs[ 7] !== 32'hFFFF_FFFA) $fatal(1, "x7  %08x", dut.regs[ 7]);
-    if (dut.regs[ 8] !== 32'hFFFF_FFFF) $fatal(1, "x8  %08x", dut.regs[ 8]);
-    if (dut.regs[ 9] !== 32'h0000_0005) $fatal(1, "x9  %08x", dut.regs[ 9]);
-    if (dut.regs[10] !== 32'h0000_0001) $fatal(1, "x10 %08x", dut.regs[10]);
-    if (dut.regs[11] !== 32'h0000_0000) $fatal(1, "x11 %08x", dut.regs[11]);
-    if (dut.regs[12] !== 32'h0000_0004) $fatal(1, "x12 %08x", dut.regs[12]);
-    if (dut.regs[13] !== 32'h0000_0087) $fatal(1, "x13 %08x", dut.regs[13]);
-    if (dut.regs[14] !== 32'h0000_0007) $fatal(1, "x14 %08x", dut.regs[14]);
+    if (pc !== 32'h0000_0024)
+      $fatal(1, "trap pc expected 0x24 got %08x", pc);
+    if (dut.regs[1] !== 32'h0000_0001) $fatal(1, "x1 %08x", dut.regs[1]);
+    if (dut.regs[2] !== 32'h0000_0010) $fatal(1, "x2 %08x (SLLI)", dut.regs[2]);
+    if (dut.regs[3] !== 32'hFFFF_FFF0) $fatal(1, "x3 %08x", dut.regs[3]);
+    if (dut.regs[4] !== 32'hFFFF_FFFC) $fatal(1, "x4 %08x (SRAI)", dut.regs[4]);
+    if (dut.regs[5] !== 32'h0000_000F) $fatal(1, "x5 %08x (SRLI)", dut.regs[5]);
+    if (dut.regs[6] !== 32'h0000_0002) $fatal(1, "x6 %08x", dut.regs[6]);
+    if (dut.regs[7] !== 32'h0000_0040) $fatal(1, "x7 %08x (SLL)", dut.regs[7]);
+    if (dut.regs[8] !== 32'hFFFF_FFFC) $fatal(1, "x8 %08x (SRA)", dut.regs[8]);
+    if (dut.regs[9] !== 32'h3FFF_FFFC) $fatal(1, "x9 %08x (SRL)", dut.regs[9]);
 
-    $display("RV32I STAGE2 PASS: ALU/compare verified, trap@pc=0x38");
+    $display("RV32I STAGE3 PASS: shifts verified, trap@pc=0x24");
     $finish;
   end
 

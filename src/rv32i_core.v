@@ -1,6 +1,6 @@
 `default_nettype none
 
-// 第2阶段实现 => 第1阶段(LUI/AUIPC/ADDI) + 基础 ALU 与比较 (I 型 + R 型)
+// 第3阶段实现 => 第1/2阶段 + 移位 (SLLI/SRLI/SRAI 立即数, SLL/SRL/SRA 寄存器)
 
 // | 格式 | 主要用途 | 典型指令 |
 // | R 型 | 寄存器-寄存器 ALU | ADD, SUB, AND, OR, SLT |
@@ -51,9 +51,10 @@ module rv32i_core #(
   wire [31:0] rs1_value = (rs1 == 5'd0) ? 32'd0 : regs[rs1];
   wire [31:0] rs2_value = (rs2 == 5'd0) ? 32'd0 : regs[rs2];
 
-  // 第 1/2 阶段用到的立即数: I 型与 U 型.
+  // 用到的立即数: I 型与 U 型; 移位的 shamt 直接取 ir[24:20], 不走立即数重排.
   wire [31:0] imm_i = {{20{ir[31]}}, ir[31:20]};
   wire [31:0] imm_u = {ir[31:12], 12'b0};
+  wire [4:0]  shamt = ir[24:20];
 
   // 组合译码只计算候选动作; 真正改 PC/寄存器/总线的操作集中在时序块.
   reg        decoded_legal;
@@ -86,6 +87,11 @@ module rv32i_core #(
           3'b100: decoded_result = rs1_value ^ imm_i;                          // XORI
           3'b110: decoded_result = rs1_value | imm_i;                          // ORI
           3'b111: decoded_result = rs1_value & imm_i;                          // ANDI
+          3'b001: if (funct7 == 7'b0000000) decoded_result = rs1_value << shamt;  // SLLI
+                  else decoded_legal = 1'b0;
+          3'b101: if (funct7 == 7'b0000000) decoded_result = rs1_value >> shamt;  // SRLI
+                  else if (funct7 == 7'b0100000) decoded_result = $signed(rs1_value) >>> shamt;  // SRAI
+                  else decoded_legal = 1'b0;
           default: decoded_legal = 1'b0;
         endcase
       end
@@ -106,7 +112,12 @@ module rv32i_core #(
                   else decoded_legal = 1'b0;
           3'b111: if (funct7 == 7'b0000000) decoded_result = rs1_value & rs2_value;  // AND
                   else decoded_legal = 1'b0;
-          default: decoded_legal = 1'b0;  // SLL/SRL/SRA 留到第 3 阶段
+          3'b001: if (funct7 == 7'b0000000) decoded_result = rs1_value << rs2_value[4:0];  // SLL
+                  else decoded_legal = 1'b0;
+          3'b101: if (funct7 == 7'b0000000) decoded_result = rs1_value >> rs2_value[4:0];  // SRL
+                  else if (funct7 == 7'b0100000) decoded_result = $signed(rs1_value) >>> rs2_value[4:0];  // SRA
+                  else decoded_legal = 1'b0;
+          default: decoded_legal = 1'b0;
         endcase
       end
 
