@@ -1,6 +1,6 @@
 `default_nettype none
 
-// 第6阶段实现 => 之前已经完成的内容 + Load/Store (LB/LH/LW/LBU/LHU, SB/SH/SW)
+// 完整 RV32I 主体 + FENCE (NOP)
 // 取指与访存共用同一组总线握手; 引入 S_MEM 状态等待数据返回.
 
 // | 格式 | 主要用途 | 典型指令 |
@@ -205,7 +205,14 @@ module rv32i_core #(
         endcase
       end
 
-      default: decoded_legal = 1'b0;  // 其余 opcode 尚未实现
+      7'b0001111: begin  // FENCE / FENCE.I
+        // 本核顺序执行, 无乱序/缓存/写缓冲, 故无需任何排空, 直接当 NOP (仅要求 funct3=0).
+        if (funct3 != 3'b000) decoded_legal = 1'b0;
+      end
+
+      // ECALL/EBREAK/其余 SYSTEM (1110011) 尚无特权架构, 由下面的 default 统一触发 trap.
+
+      default: decoded_legal = 1'b0;  // 其余 opcode (含 ECALL/EBREAK/SYSTEM) 尚未实现
     endcase
   end
 

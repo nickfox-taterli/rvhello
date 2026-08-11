@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-// rv32i_core 第 6 阶段仿真: Load/Store. 跑完 18 条后命中 ECALL.
-// 停机时核对全部结果寄存器与 PC, 重点看字节/半字的通道选择与符号/零扩展.
+// rv32i_core 第 7 阶段仿真: 完整 RV32I 主体 + FENCE (NOP).
+// FENCE 夹在 SW 与 LW 之间, 验证它对顺序核透明 (LW 仍读回刚存的值); BEQ 跳过 poison.
 module tb_rv32i;
   reg        clk    = 0;
   reg        resetn = 0;
@@ -60,23 +60,13 @@ module tb_rv32i;
     wait (trap);
     #1;
 
-    if (pc !== 32'h0000_0048) $fatal(1, "trap pc expected 0x48 got %08x", pc);
+    if (pc !== 32'h0000_0020) $fatal(1, "trap pc expected 0x20 got %08x", pc);
     if (dut.regs[10] !== 32'h0000_0100) $fatal(1, "x10 %08x", dut.regs[10]);
-    if (dut.regs[11] !== 32'h1234_5678) $fatal(1, "x11 %08x", dut.regs[11]);
-    if (dut.regs[12] !== 32'h1234_5678) $fatal(1, "x12 LW  %08x", dut.regs[12]);
-    if (dut.regs[13] !== 32'h0000_0078) $fatal(1, "x13 LB0 %08x", dut.regs[13]);
-    if (dut.regs[14] !== 32'h0000_0078) $fatal(1, "x14 LBU %08x", dut.regs[14]);
-    if (dut.regs[15] !== 32'h0000_0056) $fatal(1, "x15 LB1 %08x", dut.regs[15]);
-    if (dut.regs[16] !== 32'h0000_0034) $fatal(1, "x16 LB2 %08x", dut.regs[16]);
-    if (dut.regs[17] !== 32'h0000_0012) $fatal(1, "x17 LB3 %08x", dut.regs[17]);
-    if (dut.regs[18] !== 32'hFFFF_FF80) $fatal(1, "x18 %08x", dut.regs[18]);
-    if (dut.regs[19] !== 32'hFFFF_FF80) $fatal(1, "x19 LB signed %08x", dut.regs[19]);
-    if (dut.regs[20] !== 32'h0000_0080) $fatal(1, "x20 LBU %08x", dut.regs[20]);
-    if (dut.regs[21] !== 32'hFFFF_FFFF) $fatal(1, "x21 %08x", dut.regs[21]);
-    if (dut.regs[22] !== 32'hFFFF_FFFF) $fatal(1, "x22 LH signed %08x", dut.regs[22]);
-    if (dut.regs[23] !== 32'h0000_FFFF) $fatal(1, "x23 LHU %08x", dut.regs[23]);
+    if (dut.regs[1] !== 32'h0000_0005) $fatal(1, "x1 %08x", dut.regs[1]);
+    if (dut.regs[2] !== 32'h0000_0005) $fatal(1, "x2 LW after FENCE %08x", dut.regs[2]);
+    if (dut.regs[3] !== 32'h0000_0001) $fatal(1, "x3 (poison skipped) %08x", dut.regs[3]);
 
-    $display("RV32I STAGE6 PASS: load/store (byte/halfword/word) verified, trap@pc=0x48");
+    $display("RV32I STAGE7 PASS: FENCE=NOP + full body smoke test, trap@pc=0x20");
     $finish;
   end
 

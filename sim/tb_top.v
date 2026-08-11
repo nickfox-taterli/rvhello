@@ -6,7 +6,7 @@
 module tb_top;
   localparam integer CLOCK_HZ   = 50_000_000;
   localparam integer REFRESH_HZ = 8_000_000;
-  localparam [31:0]  TRAP_PC    = 32'h0000_0048;
+  localparam [31:0]  TRAP_PC    = 32'h0000_0020;
 
   reg        clk   = 0;
   reg        rst_n = 0;
