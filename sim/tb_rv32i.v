@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-// rv32i_core 第 4 阶段仿真: 条件分支. 6 条分支各走预期路径后命中 ECALL.
-// 全对时 x3 = 0x3F (bit0..5 各代表一条分支正确), PC 停在 0x48.
+// rv32i_core 第 5 阶段仿真: JAL/JALR. 调用-返回流程后命中 ECALL.
+// 核对链接寄存器(x1/x7)、跳转目标正确性、最终累加值 x3, 以及停机 PC.
 module tb_rv32i;
   reg        clk    = 0;
   reg        resetn = 0;
@@ -60,20 +60,19 @@ module tb_rv32i;
     wait (trap);
     #1;
 
-    if (pc !== 32'h0000_0048)
-      $fatal(1, "trap pc expected 0x48 got %08x", pc);
-    if (dut.regs[1] !== 32'h0000_0005) $fatal(1, "x1 %08x", dut.regs[1]);
-    if (dut.regs[2] !== 32'hFFFF_FFFF) $fatal(1, "x2 %08x", dut.regs[2]);
-    // x3 = 0x3F 表示 6 条分支 (BEQ/BNE/BLT/BLTU/BGE/BGEU) 全部按预期跳/不跳.
-    if (dut.regs[3] !== 32'h0000_003F)
-      $fatal(1, "x3 %08x (expected 0x3F, some branch went wrong)", dut.regs[3]);
+    if (pc !== 32'h0000_001C)
+      $fatal(1, "trap pc expected 0x1C got %08x", pc);
+    if (dut.regs[1] !== 32'h0000_0018) $fatal(1, "x1 (JAL link)   %08x", dut.regs[1]);
+    if (dut.regs[3] !== 32'h0000_0073) $fatal(1, "x3 (5+100+10)   %08x", dut.regs[3]);
+    if (dut.regs[6] !== 32'h0000_0004) $fatal(1, "x6 (AUIPC)      %08x", dut.regs[6]);
+    if (dut.regs[7] !== 32'h0000_000C) $fatal(1, "x7 (JALR link)  %08x", dut.regs[7]);
 
-    $display("RV32I STAGE4 PASS: branches verified (x3=0x3F), trap@pc=0x48");
+    $display("RV32I STAGE5 PASS: JAL/JALR verified, trap@pc=0x1C");
     $finish;
   end
 
   initial begin
     #200000;
-    $fatal(1, "tb_rv32i watchdog timeout");
+    $fatal(1, "tb_rv32i watchdog timeout (possible jump loop)");
   end
 endmodule
