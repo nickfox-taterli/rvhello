@@ -1,48 +1,38 @@
 `default_nettype none
 
 module top #(
-    parameter integer CLOCK_HZ     = 50_000_000,
-    parameter         MEMFILE      = "program.hex",
-    parameter integer CPU_PRESCALE = 500
+    parameter integer CLOCK_HZ   = 50_000_000,
+    parameter integer REFRESH_HZ = 400
 ) (
     input  wire       clk,
     input  wire       rst_n,
-    output wire [7:0] led
+    output wire [7:0] led,
+    output wire [7:0] seg,
+    output wire [5:0] seg_digit
 );
-  // 预分频产生单周期时钟使能 cpu_en, 让 microseq 在慢速时间基上运行.
-  // delay=F000 计数 * 500 分频 / 50MHz 约 0.61s 每步, 人眼可观测.
-  // 这是时钟使能而非门控时钟, 全模块共享同一个 50MHz 时钟.
-  localparam integer PRESCALE_W   = (CPU_PRESCALE <= 1) ? 1 : $clog2(CPU_PRESCALE);
-  localparam integer PRESCALE_MAX = CPU_PRESCALE - 1;
+  wire        trap;
+  wire [31:0] pc;
 
-  reg  [PRESCALE_W-1:0] prescale_cnt;
-  wire                  cpu_en = (prescale_cnt == PRESCALE_MAX[PRESCALE_W-1:0]);
-
-  wire [7:0] cpu_led;
-
-  always @(posedge clk) begin
-    if (!rst_n)
-      prescale_cnt <= {PRESCALE_W{1'b0}};
-    else if (cpu_en)
-      prescale_cnt <= {PRESCALE_W{1'b0}};
-    else
-      prescale_cnt <= prescale_cnt + 1'b1;
-  end
-
-  microseq #(
-      .MEMFILE(MEMFILE)
-  ) cpu_inst (
-      .clk    (clk),
-      .resetn (rst_n),
-      .cpu_en (cpu_en),
-      .led    (cpu_led),
-      .pc     (),
-      .retired()
+  addi_cpu cpu (
+      .clk   (clk),
+      .resetn(rst_n),
+      .trap  (trap),
+      .pc    (pc)
   );
 
-  // 板载 LED 低电平点亮, 因此把 CPU 输出取反后再送到引脚.
-  // 指令 led=01 点亮 LED0, 与流水灯直觉一致.
-  assign led = ~cpu_led;
+  seg_display #(
+      .CLOCK_HZ  (CLOCK_HZ),
+      .REFRESH_HZ(REFRESH_HZ)
+  ) seg_inst (
+      .clk      (clk),
+      .resetn   (rst_n),
+      .disp_data(pc[23:0]),
+      .seg      (seg),
+      .seg_digit(seg_digit)
+  );
+
+  // trap 拉高表示 CPU 命中不支持的指令而停机; 板载 LED 低电平点亮, 故全取反.
+  assign led = {8{~trap}};
 endmodule
 
 `default_nettype wire
