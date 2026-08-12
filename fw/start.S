@@ -49,7 +49,7 @@ trap_entry:
   sw t5, 56(sp)
   sw t6, 60(sp)
 
-  call timer_interrupt
+  call machine_trap
 
   lw ra,  0(sp)
   lw t0,  4(sp)

@@ -6,6 +6,7 @@
 #define CLINT_MTIMECMP_HI MMIO32(0x02004004u)
 #define CLINT_MTIME_LO    MMIO32(0x0200bff8u)
 #define CLINT_MTIME_HI    MMIO32(0x0200bffcu)
+#define PLIC_CLAIM        MMIO32(0x0c200004u)
 
 // CPU 时钟是 100 MHz,每 50M 拍翻转一次,所以 LED 每 0.5 s 变化一次.
 #define TIMER_TICKS 50000000ull
@@ -38,11 +39,27 @@ static void timer_set_compare(unsigned long long value)
     CLINT_MTIMECMP_HI = (unsigned int)(value >> 32);
 }
 
-void timer_interrupt(void)
+static void timer_interrupt(void)
 {
     timer_set_compare(timer_now() + TIMER_TICKS);
     led_state ^= 0xffu;
     GPIO_OUTPUT = led_state;
+}
+
+void machine_trap(void)
+{
+    unsigned int cause;
+    unsigned int source;
+
+    __asm__ volatile ("csrr %0, mcause" : "=r"(cause));
+    if (cause == 0x80000007u) {
+        timer_interrupt();
+    } else if (cause == 0x8000000bu) {
+        // claim 读会原子清 pending.complete 写会重新打开对应 gateway.
+        source = PLIC_CLAIM;
+        if (source != 0u)
+            PLIC_CLAIM = source;
+    }
 }
 
 int main(void)

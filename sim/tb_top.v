@@ -86,6 +86,7 @@ module tb_top;
     // 让 PLIC source 1 产生电平中断,确认汇总后的唯一外部入口是标准 MEIP/cause 11.
     @(negedge dut.impl.cpu_clk);
     dut.impl.cpu.csr_mie[11] = 1'b1;
+    dut.impl.plic_inst.source_priority[1] = 3'd1;
     dut.impl.plic_inst.enable[1] = 1'b1;
     force dut.impl.irq_sources_async[0] = 1'b1;
     wait (dut.impl.cpu.csr_mcause == 32'h8000_000b);
